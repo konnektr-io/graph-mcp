@@ -107,23 +107,74 @@ docker-compose down
 - kubectl configured
 - Helm (optional, for Redis)
 
-### 1. Create Namespace
+### Quick Deploy
+
+Use the production-ready manifests in the `k8s/` folder:
 
 ```bash
+# 1. Create namespace
 kubectl create namespace konnektr-mcp
+
+# 2. Create secrets (edit k8s/secrets.yaml first!)
+kubectl apply -f k8s/secrets.yaml
+
+# 3. Deploy application (includes proper health checks)
+kubectl apply -f k8s/deployment.yaml
+
+# 4. Deploy HPA
+kubectl apply -f k8s/hpa.yaml
+
+# 5. Deploy ingress
+kubectl apply -f k8s/ingress.yaml
+
+# 6. Verify
+kubectl get pods -n konnektr-mcp
+kubectl get svc -n konnektr-mcp
 ```
 
-### 2. Create Secrets
+See [k8s/README.md](../k8s/README.md) for detailed documentation.
+
+### Health Checks
+
+The deployment includes three types of Kubernetes health checks:
+
+#### 1. Liveness Probe (`/healthz`)
+- **Purpose:** Detect if application is hung
+- **Action:** Restart pod if failing
+- **Checks:** Application process is running
+
+#### 2. Readiness Probe (`/readyz`)
+- **Purpose:** Detect if application can serve traffic
+- **Action:** Remove from load balancer if failing (don't restart)
+- **Checks:**
+  - MCP session manager is running
+  - Configuration is loaded
+  - Application is ready to accept requests
+
+#### 3. Startup Probe (`/healthz`)
+- **Purpose:** Give application time to start before liveness checks
+- **Action:** Wait up to 60 seconds for startup
+- **Checks:** Basic liveness
+
+### Testing Health Endpoints
 
 ```bash
-# Auth0 credentials
-kubectl create secret generic auth0-config \
-  --from-literal=domain=your-tenant.auth0.com \
-  --from-literal=audience=https://graph.konnektr.io \
-  -n konnektr-mcp
+# Test liveness
+curl https://mcp.graph.konnektr.io/healthz
+# Response: {"status":"alive","version":"0.1.0"}
+
+# Test readiness
+curl https://mcp.graph.konnektr.io/readyz
+# Response: {"status":"ready","version":"0.1.0","auth_enabled":true}
+
+# From inside cluster
+kubectl exec -it deployment/konnektr-mcp-server -n konnektr-mcp -- \
+  curl http://localhost:8080/readyz
 ```
 
-### 3. Deploy Application
+### Manual Deployment (Alternative)
+
+If you want to customize the deployment:
 
 ```yaml
 # deployment.yaml

@@ -1,0 +1,172 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: konnektr-mcp-server
+  namespace: konnektr-mcp
+  labels:
+    app: konnektr-mcp
+    version: v0.1.0
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: konnektr-mcp
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0  # Zero downtime deployments
+  template:
+    metadata:
+      labels:
+        app: konnektr-mcp
+        version: v0.1.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: konnektr-mcp
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: mcp-server
+        image: your-registry/konnektr-mcp-server:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        # Auth0 Configuration (from secrets)
+        - name: AUTH0_DOMAIN
+          valueFrom:
+            secretKeyRef:
+              name: auth0-config
+              key: domain
+        - name: AUTH0_AUDIENCE
+          valueFrom:
+            secretKeyRef:
+              name: auth0-config
+              key: audience
+              optional: true
+        - name: AUTH_ENABLED
+          value: "true"
+
+        # API Configuration
+        - name: API_BASE_URL_TEMPLATE
+          value: "https://{resource_id}.api.graph.konnektr.io"
+        - name: API_TIMEOUT_SECONDS
+          value: "30"
+
+        # MCP Server Configuration
+        - name: MCP_RESOURCE_URL
+          value: "https://mcp.graph.konnektr.io"
+
+        # Python Configuration
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        # Liveness Probe: Restart if application hangs
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+
+        # Readiness Probe: Remove from load balancer if not ready
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 2
+
+        # Startup Probe: Give app time to start (before liveness kicks in)
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 12  # 60 seconds total (12 * 5s)
+
+        # Graceful shutdown
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 5"]
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # Set to true if you make /tmp writable
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+
+      # Spread pods across nodes for high availability
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - konnektr-mcp
+              topologyKey: kubernetes.io/hostname
+
+      # Terminate gracefully
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: konnektr-mcp-server
+  namespace: konnektr-mcp
+  labels:
+    app: konnektr-mcp
+spec:
+  type: ClusterIP
+  selector:
+    app: konnektr-mcp
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+  sessionAffinity: None
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: konnektr-mcp
+  namespace: konnektr-mcp
+  labels:
+    app: konnektr-mcp

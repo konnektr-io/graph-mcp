@@ -12,9 +12,9 @@ COPY konnektr_mcp/ ./konnektr_mcp/
 # Set Python path
 ENV PYTHONPATH=/app
 
-# Health check
+# Health check using readiness probe
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD python -c "import httpx; httpx.get('http://localhost:8080/health')" || exit 1
+  CMD python -c "import httpx; exit(0 if httpx.get('http://localhost:8080/readyz', timeout=2).status_code == 200 else 1)" || exit 1
 
 EXPOSE 8080
 

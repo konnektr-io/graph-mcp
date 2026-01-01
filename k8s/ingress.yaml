@@ -1,0 +1,55 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: konnektr-mcp-server
+  namespace: konnektr-mcp
+  labels:
+    app: konnektr-mcp
+  annotations:
+    # TLS/SSL Configuration
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+    # Force HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # CORS (adjust for production)
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization,X-Resource-Id"
+    nginx.ingress.kubernetes.io/cors-expose-headers: "Mcp-Session-Id"
+
+    # Rate limiting (adjust as needed)
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+
+    # Connection settings
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+
+    # Large request body support (for model creation)
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+    # Health check annotations
+    nginx.ingress.kubernetes.io/healthcheck-path: "/healthz"
+    nginx.ingress.kubernetes.io/healthcheck-interval: "30s"
+
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - mcp.graph.konnektr.io
+    secretName: mcp-tls
+  rules:
+  - host: mcp.graph.konnektr.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: konnektr-mcp-server
+            port:
+              number: 80

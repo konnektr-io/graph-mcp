@@ -4,13 +4,14 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # Auth0
+    # Auth0 Configuration
     auth0_domain: str = ""
-    auth0_audience: str = "https://graph.konnektr.io"
-    auth0_issuer: str = ""  # Will be derived from domain if empty
+    auth0_client_id: str = ""  # Required for token exchange
+    auth0_client_secret: str = ""  # Required for token exchange
+    auth0_audience: str = "https://graph.konnektr.io"  # Graph API audience
     auth_enabled: bool = True
 
-    # API Proxy
+    # API Configuration
     api_base_url_template: str = "https://{resource_id}.api.graph.konnektr.io"
     api_timeout_seconds: int = 30
 
@@ -19,10 +20,6 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
-
-    @property
-    def issuer_url(self) -> str:
-        return self.auth0_issuer or f"https://{self.auth0_domain}/"
 
 
 @lru_cache

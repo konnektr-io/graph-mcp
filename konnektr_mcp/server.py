@@ -13,13 +13,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.auth.settings import AuthSettings
+from fastmcp import FastMCP
+from fastmcp.server.auth.providers.auth0 import Auth0Provider
 
 from konnektr_graph.aio import KonnektrGraphClient
 
 from konnektr_mcp.config import get_settings
-from konnektr_mcp.auth import Auth0TokenVerifier
 from konnektr_mcp.client_factory import create_client
 
 
@@ -154,6 +153,21 @@ class ResourceIdMiddleware:
 
 settings = get_settings()
 
+# Use FastMCP's built-in Auth0 provider with shared audience
+# Token has audience: https://graph.konnektr.io (same as API)
+# This is the "shared audience" strategy - simple and works well
+auth = (
+    Auth0Provider(
+        config_url=f"https://{settings.auth0_domain}/.well-known/openid-configuration",
+        base_url=settings.mcp_resource_url,
+        client_id=settings.auth0_client_id,
+        client_secret=settings.auth0_client_secret,
+        audience=settings.auth0_audience,
+    )
+    if settings.auth_enabled
+    else None
+)
+
 mcp = FastMCP(
     name="Konnektr Graph",
     instructions="""Semantic Knowledge Graph Memory System for AI Agents.
@@ -177,14 +191,7 @@ All data must conform to DTDL models - the system will reject invalid structures
 The system will provide detailed validation errors if you try to create twins or relationships that don't match the schema.""",
     stateless_http=True,
     json_response=True,
-    token_verifier=Auth0TokenVerifier() if settings.auth_enabled else None,
-    auth=AuthSettings(
-        issuer_url=AnyHttpUrl(settings.issuer_url),
-        resource_server_url=AnyHttpUrl(settings.mcp_resource_url),
-        required_scopes=["mcp:tools"],
-    )
-    if settings.auth_enabled
-    else None,
+    auth=(auth if settings.auth_enabled else None),
 )
 
 
@@ -241,7 +248,7 @@ async def get_model(model_id: str) -> dict:
     """
     client = get_client()
     model = await client.get_model(model_id, include_model_definition=True)
-    return model.__dict__ if hasattr(model, "__dict__") else model
+    return model.model.__dict__
 
 
 @mcp.tool()
@@ -539,25 +546,60 @@ async def query_digital_twins(query: str) -> list[dict]:
 # ========== Starlette App ==========
 
 
-# Health check endpoint
+# Liveness probe: Check if application is alive (doesn't hang)
+async def liveness(request: Request):
+    """
+    Kubernetes liveness probe endpoint.
+    Returns 200 if the application process is running.
+    If this fails, Kubernetes will restart the pod.
+    """
+    return JSONResponse({"status": "alive", "version": "0.1.0"})
+
+
+# Readiness probe: Check if application can serve traffic
+async def readiness(request: Request):
+    """
+    Kubernetes readiness probe endpoint.
+    Returns 200 if the application is ready to accept requests.
+    If this fails, Kubernetes won't send traffic to this pod.
+    """
+    try:
+        # Check settings are loaded
+        settings = get_settings()
+        if not settings:
+            return JSONResponse(
+                {"status": "not_ready", "reason": "Configuration not loaded"},
+                status_code=503,
+            )
+
+        # All checks passed
+        return JSONResponse(
+            {
+                "status": "ready",
+                "version": "0.1.0",
+                "auth_enabled": settings.auth_enabled,
+            }
+        )
+
+    except Exception as e:
+        return JSONResponse({"status": "not_ready", "reason": str(e)}, status_code=503)
+
+
+# Legacy health endpoint (kept for backward compatibility)
 async def health(request: Request):
-    return JSONResponse({"status": "healthy", "version": "0.1.0"})
-
-
-@contextlib.asynccontextmanager
-async def lifespan(app: Starlette):
-    async with mcp.session_manager.run():
-        yield
+    """Legacy health check - redirects to readiness probe logic"""
+    return await readiness(request)
 
 
 # Build the Starlette app
 base_app = Starlette(
     routes=[
-        Route("/health", health),
-        Route("/ready", health),
-        Mount("/", app=mcp.streamable_http_app()),
-    ],
-    lifespan=lifespan,
+        Route("/health", health),  # Legacy, uses readiness logic
+        Route("/healthz", liveness),  # Kubernetes liveness probe
+        Route("/readyz", readiness),  # Kubernetes readiness probe
+        Route("/ready", readiness),  # Alternative readiness endpoint
+        Mount("/", app=mcp.http_app()),
+    ]
 )
 
 # Wrap with middleware (order matters: CORS -> ResourceId -> App)
