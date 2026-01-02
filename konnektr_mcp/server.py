@@ -91,7 +91,7 @@ class CustomMiddleware:
     HEADER_NAME = b"x-resource-id"
     QUERY_PARAM = "resource_id"
 
-    def __init__(self, app: ASGIApp, auth_provider=None):
+    def __init__(self, app: ASGIApp, auth_provider: Optional[OIDCProxy] = None):
         self.app = app
         self.auth_provider = auth_provider
 
@@ -178,24 +178,33 @@ class CustomMiddleware:
         """Extract upstream Auth0 token from authenticated user context.
 
         The OAuth proxy stores upstream tokens separately from the FastMCP JWTs.
-        We need to:
-        1. Get the FastMCP JWT token string from the request
+        This middleware runs BEFORE FastMCP's auth middleware, so we need to:
+        1. Extract the FastMCP JWT from the Authorization header
         2. Call the auth provider's load_access_token() to do the token swap
-        3. Extract the upstream token from the validated result
+        3. Return the upstream Auth0 token
         """
         try:
-            # Get the FastMCP JWT token from the request
-            fastmcp_token = get_access_token()
+            # Extract Bearer token from Authorization header
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode()
 
-            if fastmcp_token is None:
-                logger.warning("No FastMCP token found in authenticated context")
+            if not auth_header:
+                logger.warning("No Authorization header found in request")
                 return None
 
-            # The token attribute contains the FastMCP JWT string
-            fastmcp_jwt = fastmcp_token.token
+            # Extract token from "Bearer <token>" format
+            if not auth_header.startswith("Bearer "):
+                logger.warning("Authorization header does not use Bearer scheme")
+                return None
+
+            fastmcp_jwt = auth_header[7:]  # Remove "Bearer " prefix
             if not fastmcp_jwt:
-                logger.warning("FastMCP token object found but token field is empty")
+                logger.warning("Authorization header present but token is empty")
                 return None
+
+            logger.debug(
+                f"Extracted FastMCP JWT from Authorization header (length: {len(fastmcp_jwt)})"
+            )
 
             # Use the auth provider to swap the FastMCP JWT for the upstream token
             # The load_access_token method looks up the JTI mapping and returns
