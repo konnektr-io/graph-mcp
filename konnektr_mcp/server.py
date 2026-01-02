@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from fastmcp import FastMCP
-from fastmcp.server.auth.providers.auth0 import Auth0Provider
+from fastmcp.server.auth import OIDCProxy
 
 from konnektr_graph.aio import KonnektrGraphClient
 
@@ -104,8 +104,19 @@ class ResourceIdMiddleware:
             await response(scope, receive, send)
             return
 
-        # Extract access token from Authorization header
-        access_token = self._extract_token(scope)
+        # Extract upstream Auth0 token from authenticated user context
+        # The FastMCP OAuth proxy stores the upstream token after validating the FastMCP JWT
+        access_token = self._extract_upstream_token(scope)
+        if not access_token:
+            response = JSONResponse(
+                {
+                    "error": "authentication_required",
+                    "message": "Valid authentication token required",
+                },
+                status_code=401,
+            )
+            await response(scope, receive, send)
+            return
 
         # Create SDK client for this request
         client = create_client(resource_id, access_token)
@@ -141,29 +152,45 @@ class ResourceIdMiddleware:
 
         return None
 
-    def _extract_token(self, scope: Scope) -> str:
-        """Extract Bearer token from Authorization header."""
-        headers = dict(scope.get("headers", []))
-        auth_header = headers.get(b"authorization", b"").decode()
-        if auth_header.lower().startswith("bearer "):
-            return auth_header[7:]
-        return ""
+    def _extract_upstream_token(self, scope: Scope) -> str | None:
+        """Extract upstream Auth0 token from authenticated user context.
+
+        FastMCP's OAuth proxy validates the FastMCP JWT and makes the
+        upstream token available in the scope under 'mcp.auth.token'.
+        """
+        # Check if authentication middleware set the upstream token
+        mcp_auth = scope.get("mcp.auth", {})
+        upstream_token = mcp_auth.get("token")
+
+        if upstream_token:
+            return upstream_token
+
+        # Fallback: check if user object has token (depends on FastMCP version)
+        user = scope.get("user")
+        if user is not None and hasattr(user, "token"):
+            return user.token
+
+        return None
 
 
 # ========== FastMCP Server ==========
 
 settings = get_settings()
 
-# Use FastMCP's built-in Auth0 provider with shared audience
+# Use FastMCP's OIDC proxy for Auth0 with shared audience
 # Token has audience: https://graph.konnektr.io (same as API)
-# This is the "shared audience" strategy - simple and works well
+# Auth0 requires audience in both authorize and token requests to issue JWTs
 auth = (
-    Auth0Provider(
+    OIDCProxy(
         config_url=f"https://{settings.auth0_domain}/.well-known/openid-configuration",
         base_url=settings.mcp_resource_url,
         client_id=settings.auth0_client_id,
         client_secret=settings.auth0_client_secret,
         audience=settings.auth0_audience,
+        required_scopes=["openid"],
+        # Auth0 requires audience parameter to issue JWT tokens
+        extra_authorize_params={"audience": settings.auth0_audience},
+        extra_token_params={"audience": settings.auth0_audience},
     )
     if settings.auth_enabled
     else None
@@ -595,7 +622,13 @@ async def health(request: Request):
 
 
 # Build the Starlette app
-mcp_app = mcp.http_app()
+# Add ResourceIdMiddleware to mcp_app so it runs AFTER authentication
+from starlette.middleware import Middleware
+
+mcp_app = mcp.http_app(
+    middleware=[Middleware(ResourceIdMiddleware)] if settings.auth_enabled else []
+)
+
 base_app = Starlette(
     routes=[
         Route("/health", health),  # Legacy, uses readiness logic
@@ -607,9 +640,9 @@ base_app = Starlette(
     lifespan=mcp_app.lifespan,
 )
 
-# Wrap with middleware (order matters: CORS -> ResourceId -> App)
+# Wrap with CORS middleware
 app = CORSMiddleware(
-    ResourceIdMiddleware(base_app),
+    base_app,
     allow_origins=["*"],  # Configure appropriately for production
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*", "X-Resource-Id"],  # Allow custom header
