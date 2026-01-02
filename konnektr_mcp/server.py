@@ -24,6 +24,7 @@ from konnektr_mcp.client_factory import create_client
 
 # ========== Request Context ==========
 
+
 @dataclass
 class RequestContext:
     """Per-request context containing resource_id and SDK client."""
@@ -34,8 +35,8 @@ class RequestContext:
 
 
 # Context variable for per-request state
-_request_context: contextvars.ContextVar[RequestContext | None] = contextvars.ContextVar(
-    "request_context", default=None
+_request_context: contextvars.ContextVar[RequestContext | None] = (
+    contextvars.ContextVar("request_context", default=None)
 )
 
 
@@ -472,7 +473,9 @@ async def create_or_replace_relationship(
         }
     """
     client = get_client()
-    return await client.upsert_relationship(source_twin_id, relationship_id, relationship)
+    return await client.upsert_relationship(
+        source_twin_id, relationship_id, relationship
+    )
 
 
 @mcp.tool()
@@ -592,14 +595,16 @@ async def health(request: Request):
 
 
 # Build the Starlette app
+mcp_app = mcp.http_app()
 base_app = Starlette(
     routes=[
         Route("/health", health),  # Legacy, uses readiness logic
         Route("/healthz", liveness),  # Kubernetes liveness probe
         Route("/readyz", readiness),  # Kubernetes readiness probe
         Route("/ready", readiness),  # Alternative readiness endpoint
-        Mount("/", app=mcp.http_app()),
-    ]
+        Mount("/", app=mcp_app),
+    ],
+    lifespan=mcp_app.lifespan,
 )
 
 # Wrap with middleware (order matters: CORS -> ResourceId -> App)
