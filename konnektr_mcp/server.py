@@ -17,6 +17,12 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import OIDCProxy
 
 from konnektr_graph.aio import KonnektrGraphClient
+from konnektr_graph.types import (
+    BasicDigitalTwin,
+    BasicRelationship,
+    DtdlInterface,
+    JsonPatchOperation,
+)
 
 from konnektr_mcp.config import get_settings
 from konnektr_mcp.client_factory import create_client
@@ -227,7 +233,7 @@ The system will provide detailed validation errors if you try to create twins or
 
 
 @mcp.tool()
-async def list_models(dependencies_for: list[str] | None = None) -> list[dict]:
+async def list_models(dependencies_for: list[str] | None = None):
     """
     List all DTDL models in the graph (summary only). Use get_model for full details.
 
@@ -245,23 +251,12 @@ async def list_models(dependencies_for: list[str] | None = None) -> list[dict]:
     async for model in client.list_models(
         dependencies_for=dependencies_for, include_model_definition=False
     ):
-        model_dict = model.__dict__ if hasattr(model, "__dict__") else model
-        models.append(
-            {
-                "id": model_dict.get("id"),
-                "displayName": (
-                    model_dict.get("language_display_names", {}).get("en")
-                    or list(model_dict.get("language_display_names", {}).values())[0]
-                    if model_dict.get("language_display_names")
-                    else None
-                ),
-            }
-        )
+        models.append(model)
     return models
 
 
 @mcp.tool()
-async def get_model(model_id: str) -> dict:
+async def get_model(model_id: str):
     """
     Get the complete DTDL model definition including all properties, relationships, and components.
 
@@ -272,17 +267,17 @@ async def get_model(model_id: str) -> dict:
         model_id: The DTMI (e.g., 'dtmi:example:Room;1')
 
     Returns:
-        Full model definition with flattened inherited properties
+        Full model definition with flattened inherited properties and relationships
     """
     client = get_client()
-    model = await client.get_model(model_id, include_model_definition=True)
-    return model.model.__dict__
+    model = await client.get_model(model_id, include_base_model_contents=True)
+    return model
 
 
 @mcp.tool()
-async def create_models(models: list[dict]) -> str:
+async def create_models(models: list[DtdlInterface]):
     """
-    Create one or more DTDL models. Models must be valid DTDL v3.
+    Create one or more DTDL models. Models must be valid DTDL v3/v4.
 
     The system validates DTDL syntax and will return detailed error messages if the schema is invalid.
 
@@ -298,9 +293,7 @@ async def create_models(models: list[dict]) -> str:
 
 
 @mcp.tool()
-async def search_models(
-    search_text: Optional[str] = None, limit: int = 10
-) -> list[dict]:
+async def search_models(search_text: Optional[str] = None, limit: int = 10):
     """
     Search for DTDL models using semantic search and keyword matching.
 
@@ -333,7 +326,7 @@ async def search_models(
 
 
 @mcp.tool()
-async def get_digital_twin(twin_id: str) -> dict:
+async def get_digital_twin(twin_id: str):
     """
     Get a digital twin by its ID.
 
@@ -348,7 +341,7 @@ async def get_digital_twin(twin_id: str) -> dict:
 
 
 @mcp.tool()
-async def create_or_replace_digital_twin(twin_id: str, twin: dict) -> dict:
+async def create_or_replace_digital_twin(twin_id: str, twin: BasicDigitalTwin):
     """
     Create a new digital twin or replace an existing one.
 
@@ -376,7 +369,7 @@ async def create_or_replace_digital_twin(twin_id: str, twin: dict) -> dict:
 
 
 @mcp.tool()
-async def update_digital_twin(twin_id: str, patch: list[dict]) -> dict:
+async def update_digital_twin(twin_id: str, patch: list[JsonPatchOperation]):
     """
     Update a digital twin using JSON Patch operations (RFC 6902).
 
@@ -436,9 +429,7 @@ async def search_digital_twins(
 
 
 @mcp.tool()
-async def list_relationships(
-    twin_id: str, relationship_name: str | None = None
-) -> list[dict]:
+async def list_relationships(twin_id: str, relationship_name: str | None = None):
     """
     List all outgoing relationships from a digital twin.
 
@@ -457,7 +448,7 @@ async def list_relationships(
 
 
 @mcp.tool()
-async def get_relationship(twin_id: str, relationship_id: str) -> dict:
+async def get_relationship(twin_id: str, relationship_id: str):
     """
     Get a specific relationship by ID.
 
@@ -474,8 +465,8 @@ async def get_relationship(twin_id: str, relationship_id: str) -> dict:
 
 @mcp.tool()
 async def create_or_replace_relationship(
-    source_twin_id: str, relationship_id: str, relationship: dict
-) -> dict:
+    source_twin_id: str, relationship_id: str, relationship: BasicRelationship
+):
     """
     Create a relationship between two digital twins.
 
@@ -507,7 +498,7 @@ async def create_or_replace_relationship(
 
 @mcp.tool()
 async def update_relationship(
-    twin_id: str, relationship_id: str, patch: list[dict]
+    twin_id: str, relationship_id: str, patch: list[JsonPatchOperation]
 ) -> dict:
     """
     Update a relationship using JSON Patch operations.
@@ -529,7 +520,7 @@ async def update_relationship(
 
 
 @mcp.tool()
-async def delete_relationship(twin_id: str, relationship_id: str) -> dict:
+async def delete_relationship(twin_id: str, relationship_id: str):
     """
     Delete a relationship.
 
