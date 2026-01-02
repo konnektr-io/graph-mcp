@@ -91,8 +91,9 @@ class CustomMiddleware:
     HEADER_NAME = b"x-resource-id"
     QUERY_PARAM = "resource_id"
 
-    def __init__(self, app: ASGIApp):
+    def __init__(self, app: ASGIApp, auth_provider=None):
         self.app = app
+        self.auth_provider = auth_provider
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] != "http":
@@ -123,11 +124,11 @@ class CustomMiddleware:
 
         # Extract upstream Auth0 token from authenticated user context if auth is enabled
         # For unauthenticated backends (like demo), we'll use an empty token
-        access_token = ""
+        access_token: str = ""
         if settings.auth_enabled:
             # The FastMCP OAuth proxy stores the upstream token after validating the FastMCP JWT
-            access_token = self._extract_upstream_token(scope)
-            if not access_token:
+            token_result = await self._extract_upstream_token(scope)
+            if not token_result:
                 response = JSONResponse(
                     {
                         "error": "authentication_required",
@@ -137,6 +138,7 @@ class CustomMiddleware:
                 )
                 await response(scope, receive, send)
                 return
+            access_token = token_result
 
         # Create SDK client for this request
         client = create_client(resource_id, access_token)
@@ -172,34 +174,56 @@ class CustomMiddleware:
 
         return None
 
-    def _extract_upstream_token(self, scope: Scope) -> str | None:
+    async def _extract_upstream_token(self, scope: Scope) -> str | None:
         """Extract upstream Auth0 token from authenticated user context.
 
-        Uses FastMCP's get_access_token() API to retrieve the upstream OAuth token
-        that was obtained from Auth0 after the user authenticated.
+        The OAuth proxy stores upstream tokens separately from the FastMCP JWTs.
+        We need to:
+        1. Get the FastMCP JWT token string from the request
+        2. Call the auth provider's load_access_token() to do the token swap
+        3. Extract the upstream token from the validated result
         """
         try:
-            # Use FastMCP's official API to get the access token
-            access_token = get_access_token()
+            # Get the FastMCP JWT token from the request
+            fastmcp_token = get_access_token()
 
-            if access_token is None:
-                logger.warning("No access token found in authenticated context")
+            if fastmcp_token is None:
+                logger.warning("No FastMCP token found in authenticated context")
                 return None
 
-            # The token attribute contains the upstream OAuth provider's token
-            upstream_token = access_token.token
+            # The token attribute contains the FastMCP JWT string
+            fastmcp_jwt = fastmcp_token.token
+            if not fastmcp_jwt:
+                logger.warning("FastMCP token object found but token field is empty")
+                return None
 
+            # Use the auth provider to swap the FastMCP JWT for the upstream token
+            # The load_access_token method looks up the JTI mapping and returns
+            # an AccessToken with the validated upstream token
+            if self.auth_provider is None:
+                logger.warning("No auth provider configured for token swap")
+                return None
+
+            validated_token = await self.auth_provider.load_access_token(fastmcp_jwt)
+            if validated_token is None:
+                logger.warning("Failed to swap FastMCP JWT for upstream token")
+                return None
+
+            # The validated token's .token attribute now contains the upstream Auth0 token
+            upstream_token = validated_token.token
             if upstream_token:
                 logger.debug(
-                    f"Successfully retrieved upstream token (length: {len(upstream_token)})"
+                    f"Successfully retrieved upstream token via token swap (length: {len(upstream_token)})"
                 )
                 return upstream_token
             else:
-                logger.warning("Access token object found but token field is empty")
+                logger.warning(
+                    "Validated token found but upstream token field is empty"
+                )
                 return None
 
         except Exception as e:
-            logger.error(f"Error retrieving access token: {e}", exc_info=True)
+            logger.error(f"Error retrieving upstream token: {e}", exc_info=True)
             return None
 
 
@@ -639,9 +663,9 @@ async def health(request: Request):
 
 mcp_app = mcp.http_app()
 
-# Always wrap mcp_app with ResourceIdMiddleware (needed for routing to correct backend)
-# The middleware will handle auth token extraction only when auth is enabled
-wrapped_mcp_app = CustomMiddleware(mcp_app)
+# Always wrap mcp_app with CustomMiddleware (needed for routing to correct backend)
+# Pass the auth provider so middleware can perform token swaps when auth is enabled
+wrapped_mcp_app = CustomMiddleware(mcp_app, auth_provider=auth)
 
 base_app = Starlette(
     routes=[
