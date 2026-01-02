@@ -1,6 +1,9 @@
 # konnektr_mcp/server.py
 import contextlib
 import contextvars
+import logging
+import base64
+import json
 from dataclasses import dataclass
 from urllib.parse import parse_qs
 from typing import Optional
@@ -15,6 +18,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import OIDCProxy
+from fastmcp.server.dependencies import get_access_token
 
 from konnektr_graph.aio import KonnektrGraphClient
 from konnektr_graph.types import (
@@ -26,6 +30,13 @@ from konnektr_graph.types import (
 
 from konnektr_mcp.config import get_settings
 from konnektr_mcp.client_factory import create_client
+
+logger = logging.getLogger(__name__)
+
+# Configure logging for debugging
+logging.basicConfig(
+    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 
 # ========== Request Context ==========
@@ -63,10 +74,10 @@ def get_client() -> KonnektrGraphClient:
     return get_current_context().client
 
 
-# ========== Resource ID Middleware ==========
+# ========== Middleware ==========
 
 
-class ResourceIdMiddleware:
+class CustomMiddleware:
     """
     Middleware that extracts resource_id from query param OR header.
 
@@ -110,19 +121,22 @@ class ResourceIdMiddleware:
             await response(scope, receive, send)
             return
 
-        # Extract upstream Auth0 token from authenticated user context
-        # The FastMCP OAuth proxy stores the upstream token after validating the FastMCP JWT
-        access_token = self._extract_upstream_token(scope)
-        if not access_token:
-            response = JSONResponse(
-                {
-                    "error": "authentication_required",
-                    "message": "Valid authentication token required",
-                },
-                status_code=401,
-            )
-            await response(scope, receive, send)
-            return
+        # Extract upstream Auth0 token from authenticated user context if auth is enabled
+        # For unauthenticated backends (like demo), we'll use an empty token
+        access_token = ""
+        if settings.auth_enabled:
+            # The FastMCP OAuth proxy stores the upstream token after validating the FastMCP JWT
+            access_token = self._extract_upstream_token(scope)
+            if not access_token:
+                response = JSONResponse(
+                    {
+                        "error": "authentication_required",
+                        "message": "Valid authentication token required",
+                    },
+                    status_code=401,
+                )
+                await response(scope, receive, send)
+                return
 
         # Create SDK client for this request
         client = create_client(resource_id, access_token)
@@ -161,25 +175,33 @@ class ResourceIdMiddleware:
     def _extract_upstream_token(self, scope: Scope) -> str | None:
         """Extract upstream Auth0 token from authenticated user context.
 
-        FastMCP's OAuth proxy validates the FastMCP JWT and makes the
-        upstream token available in the scope under 'mcp.auth.token'.
+        Uses FastMCP's get_access_token() API to retrieve the upstream OAuth token
+        that was obtained from Auth0 after the user authenticated.
         """
-        # Check if authentication middleware set the upstream token
-        mcp_auth = scope.get("mcp.auth", {})
-        upstream_token = mcp_auth.get("token")
+        try:
+            # Use FastMCP's official API to get the access token
+            access_token = get_access_token()
 
-        if upstream_token:
-            return upstream_token
+            if access_token is None:
+                logger.warning("No access token found in authenticated context")
+                return None
 
-        # Fallback: check if user object has token (depends on FastMCP version)
-        user = scope.get("user")
-        if user is not None and hasattr(user, "token"):
-            return user.token
+            # The token attribute contains the upstream OAuth provider's token
+            upstream_token = access_token.token
 
-        return None
+            if upstream_token:
+                logger.debug(
+                    f"Successfully retrieved upstream token (length: {len(upstream_token)})"
+                )
+                return upstream_token
+            else:
+                logger.warning("Access token object found but token field is empty")
+                return None
 
+        except Exception as e:
+            logger.error(f"Error retrieving access token: {e}", exc_info=True)
+            return None
 
-# ========== FastMCP Server ==========
 
 settings = get_settings()
 
@@ -613,12 +635,13 @@ async def health(request: Request):
 
 
 # Build the Starlette app
-# Add ResourceIdMiddleware to mcp_app so it runs AFTER authentication
-from starlette.middleware import Middleware
+# Middleware needs to run in the request context where auth is available
 
-mcp_app = mcp.http_app(
-    middleware=[Middleware(ResourceIdMiddleware)] if settings.auth_enabled else []
-)
+mcp_app = mcp.http_app()
+
+# Always wrap mcp_app with ResourceIdMiddleware (needed for routing to correct backend)
+# The middleware will handle auth token extraction only when auth is enabled
+wrapped_mcp_app = CustomMiddleware(mcp_app)
 
 base_app = Starlette(
     routes=[
@@ -626,7 +649,7 @@ base_app = Starlette(
         Route("/healthz", liveness),  # Kubernetes liveness probe
         Route("/readyz", readiness),  # Kubernetes readiness probe
         Route("/ready", readiness),  # Alternative readiness endpoint
-        Mount("/", app=mcp_app),
+        Mount("/", app=wrapped_mcp_app),
     ],
     lifespan=mcp_app.lifespan,
 )
