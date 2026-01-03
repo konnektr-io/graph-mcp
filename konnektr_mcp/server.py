@@ -501,14 +501,25 @@ async def update_digital_twin(
 @mcp.tool(annotations={"destructiveHint": True})
 async def delete_digital_twin(
     twin_id: Annotated[str, "ID of the twin to delete"],
+    delete_relationships: Annotated[
+        bool,
+        "If true, delete all relationships connected to the twin before deleting the twin itself",
+    ] = False,
 ) -> dict:
     """
-    Delete a digital twin. All relationships must be deleted first.
+    Delete a digital twin. All relationships must be deleted first (unless delete_relationships is true).
 
     Returns:
         Success confirmation
     """
     client = get_client()
+    if delete_relationships:
+        # Delete all outgoing relationships
+        async for rel in client.list_relationships(twin_id):
+            await client.delete_relationship(twin_id, rel.relationshipId)
+        # Delete all incoming relationships
+        async for rel in client.list_incoming_relationships(twin_id):
+            await client.delete_relationship(rel.sourceId, rel.relationshipId)
     await client.delete_digital_twin(twin_id)
     return {"success": True, "message": f"Twin '{twin_id}' deleted successfully"}
 
