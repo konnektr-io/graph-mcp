@@ -11,4 +11,4 @@ pydantic-settings>=2.6.0
 python-jose[cryptography]>=3.3.0
 
 # Konnektr Graph SDK from PyPI
-konnektr-graph>=0.2.5
+konnektr-graph>=0.2.7
