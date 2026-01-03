@@ -14,7 +14,6 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import OIDCProxy
 
 from konnektr_graph.aio import KonnektrGraphClient
@@ -344,14 +343,8 @@ async def create_model(model: Annotated[dict, "DTDL model definition"]):
     """
     client = get_client()
     dtdl_model = DtdlInterface.from_dict(model)
-    try:
-        await client.create_models([dtdl_model])
-        return {
-            "success": True,
-            "message": f"Successfully created model {dtdl_model.id}.",
-        }
-    except Exception as e:
-        raise ToolError(f"Failed to create model: {str(e)}") from e
+    await client.create_models([dtdl_model])
+    return f"Successfully created model {dtdl_model.id}."
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
