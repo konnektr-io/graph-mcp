@@ -254,7 +254,7 @@ auth = (
 )
 
 mcp = FastMCP(
-    name="Konnektr Graph",
+    name="Konnektr MCP",
     website_url="https://konnektr.io",
     icons=[Icon(src="https://konnektr.io/konnektr.svg", mimeType="image/svg+xml")],
     instructions="""Semantic Knowledge Graph Memory System for AI Agents.
