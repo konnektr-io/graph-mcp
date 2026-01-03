@@ -1,7 +1,7 @@
 # konnektr_mcp/server.py
 import contextvars
 import logging
-from dataclasses import Field, dataclass
+from dataclasses import dataclass
 from typing_extensions import Annotated
 from urllib.parse import parse_qs
 from typing import Optional
@@ -15,6 +15,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import OIDCProxy
+from mcp.types import Icon
 
 from konnektr_graph.aio import KonnektrGraphClient
 from konnektr_graph.types import (
@@ -254,6 +255,8 @@ auth = (
 
 mcp = FastMCP(
     name="Konnektr Graph",
+    website_url="https://konnektr.io",
+    icons=[Icon(src="https://konnektr.io/konnektr.svg", mimeType="image/svg+xml")],
     instructions="""Semantic Knowledge Graph Memory System for AI Agents.
 
 This system provides validated, schema-enforced memory storage using Digital Twins Definition Language (DTDL).
