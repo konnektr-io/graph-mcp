@@ -1,7 +1,7 @@
 # konnektr_mcp/server.py
 import contextvars
 import logging
-from dataclasses import dataclass
+from dataclasses import Field, dataclass
 from typing_extensions import Annotated
 from urllib.parse import parse_qs
 from typing import Optional
@@ -18,14 +18,13 @@ from fastmcp.server.auth import OIDCProxy
 
 from konnektr_graph.aio import KonnektrGraphClient
 from konnektr_graph.types import (
-    BasicDigitalTwin,
-    BasicRelationship,
     DtdlInterface,
     JsonPatchOperation,
 )
 
 from konnektr_mcp.config import get_settings
 from konnektr_mcp.client_factory import create_client
+from konnektr_mcp.types import DigitalTwin, Relationship
 
 logger = logging.getLogger(__name__)
 
@@ -320,9 +319,6 @@ async def get_model(
     Use this to understand what properties are required/optional and what relationships are allowed
     before creating digital twins.
 
-    Args:
-        model_id: The DTMI (e.g., 'dtmi:example:Room;1')
-
     Returns:
         Full model definition with flattened inherited properties and relationships
     """
@@ -332,7 +328,7 @@ async def get_model(
 
 
 @mcp.tool()
-async def create_model(model: Annotated[dict, "DTDL model definition"]):
+async def create_model(model: Annotated[dict, "DTDL model definition"]) -> dict:
     """
     Create one DTDL model. Models must be valid DTDL v3/v4.
     Any dependent models must already exist in the system.
@@ -344,37 +340,26 @@ async def create_model(model: Annotated[dict, "DTDL model definition"]):
     client = get_client()
     dtdl_model = DtdlInterface.from_dict(model)
     await client.create_models([dtdl_model])
-    return f"Successfully created model {dtdl_model.id}."
+    return {"success": True, "message": f"Successfully created model {dtdl_model.id}."}
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
-async def search_models(search_text: Optional[str] = None, limit: int = 10):
+async def search_models(
+    search_text: Annotated[
+        Optional[str], "Search query (searches display name, description, ID)"
+    ] = None,
+    limit: Annotated[int, "Maximum number of results"] = 10,
+) -> list[dict]:
     """
     Search for DTDL models using semantic search and keyword matching.
-
     Searches across model IDs, display names, and descriptions to help you find relevant schemas.
 
-    Args:
-        search_text: Search query (searches display name, description, ID)
-        limit: Maximum number of results
 
     Returns:
         Matching models with IDs, display names, and descriptions
     """
     client = get_client()
-    try:
-        results = await client.search_models(search_text or "", limit)
-        # Return simplified results
-        return [
-            {
-                "id": m.get("id"),
-                "displayName": m.get("displayName"),
-                "description": m.get("description"),
-            }
-            for m in results
-        ]
-    except Exception as e:
-        return [{"error": f"Search failed: {str(e)}"}]
+    return await client.search_models(search_text or "", limit)
 
 
 # ========== Digital Twin Tools ==========
@@ -383,7 +368,7 @@ async def search_models(search_text: Optional[str] = None, limit: int = 10):
 @mcp.tool(annotations={"readOnlyHint": True})
 async def get_digital_twin(
     twin_id: Annotated[str, "The unique ID of the digital twin"],
-):
+) -> DigitalTwin:
     """
     Get a digital twin by its ID.
 
@@ -394,11 +379,16 @@ async def get_digital_twin(
         Twin data including all properties and metadata
     """
     client = get_client()
-    return await client.get_digital_twin(twin_id)
+    twin = await client.get_digital_twin(twin_id)
+    return DigitalTwin.model_validate(twin.to_dict())
 
 
 @mcp.tool()
-async def create_or_replace_digital_twin(twin_id: str, twin: BasicDigitalTwin):
+async def create_or_replace_digital_twin(
+    twin: Annotated[
+        DigitalTwin, "Twin data including $dtId and $metadata with $model property"
+    ],
+) -> DigitalTwin:
     """
     Create a new digital twin or replace an existing one.
 
@@ -407,32 +397,33 @@ async def create_or_replace_digital_twin(twin_id: str, twin: BasicDigitalTwin):
     - Property types match the schema
     - No extra properties beyond the model definition
 
-    Args:
-        twin_id: Unique ID for the twin
-        twin: Twin data including $metadata with $model property
-
     Returns:
         Created/updated twin data
 
     Example:
         {
+            "$dtId": "room-101",
             "$metadata": {"$model": "dtmi:example:Room;1"},
             "temperature": 72.5,
             "humidity": 45
         }
     """
     client = get_client()
-    return await client.upsert_digital_twin(twin_id, twin)
+    twin_id = twin.dtId
+    new_twin = await client.upsert_digital_twin(twin_id, twin.to_dataclass())
+    return DigitalTwin.model_validate(new_twin.to_dict())
 
 
 @mcp.tool()
-async def update_digital_twin(twin_id: str, patch: list[JsonPatchOperation]):
+async def update_digital_twin(
+    twin_id: Annotated[str, "ID of the twin to delete"],
+    patch: Annotated[
+        list[JsonPatchOperation],
+        """JSON Patch operations, e.g., [{"op": "replace", "path": "/temperature", "value": 75}]""",
+    ],
+):
     """
     Update a digital twin using JSON Patch operations (RFC 6902).
-
-    Args:
-        twin_id: ID of the twin to update
-        patch: JSON Patch operations, e.g., [{"op": "replace", "path": "/temperature", "value": 75}]
 
     Returns:
         Success confirmation
@@ -442,13 +433,12 @@ async def update_digital_twin(twin_id: str, patch: list[JsonPatchOperation]):
     return {"success": True, "message": f"Twin '{twin_id}' updated successfully"}
 
 
-@mcp.tool()
-async def delete_digital_twin(twin_id: str) -> dict:
+@mcp.tool(annotations={"destructiveHint": True})
+async def delete_digital_twin(
+    twin_id: Annotated[str, "ID of the twin to delete"],
+) -> dict:
     """
     Delete a digital twin. All relationships must be deleted first.
-
-    Args:
-        twin_id: ID of the twin to delete
 
     Returns:
         Success confirmation
@@ -486,13 +476,14 @@ async def search_digital_twins(
 
 
 @mcp.tool()
-async def list_relationships(twin_id: str, relationship_name: str | None = None):
+async def list_relationships(
+    twin_id: Annotated[str, "Source twin ID"],
+    relationship_name: Annotated[
+        Optional[str], "Optional filter by relationship name"
+    ] = None,
+) -> list[Relationship]:
     """
     List all outgoing relationships from a digital twin.
-
-    Args:
-        twin_id: Source twin ID
-        relationship_name: Optional filter by relationship name
 
     Returns:
         List of relationships
@@ -500,42 +491,40 @@ async def list_relationships(twin_id: str, relationship_name: str | None = None)
     client = get_client()
     relationships = []
     async for rel in client.list_relationships(twin_id, relationship_name):
-        relationships.append(rel)
+        relationships.append(Relationship.model_validate(rel.to_dict()))
     return relationships
 
 
 @mcp.tool()
-async def get_relationship(twin_id: str, relationship_id: str):
+async def get_relationship(
+    twin_id: Annotated[str, "Source twin ID"],
+    relationship_id: Annotated[str, "The relationship ID"],
+) -> Relationship:
     """
     Get a specific relationship by ID.
-
-    Args:
-        twin_id: Source twin ID
-        relationship_id: The relationship ID
 
     Returns:
         Relationship data
     """
     client = get_client()
-    return await client.get_relationship(twin_id, relationship_id)
+    rel = await client.get_relationship(twin_id, relationship_id)
+    return Relationship.model_validate(rel.to_dict())
 
 
 @mcp.tool()
 async def create_or_replace_relationship(
-    source_twin_id: str, relationship_id: str, relationship: BasicRelationship
-):
+    relationship: Annotated[
+        Relationship,
+        "Full relationship with $relationshipId, $relationshipName, $sourceId, $targetId and optional properties.",
+    ],
+) -> Relationship:
     """
     Create a relationship between two digital twins.
 
     Relationships must be defined in the source twin's DTDL model. The system validates:
     - The relationship type is allowed by the model
     - The target twin's model is compatible
-    - Required relationship properties are present
-
-    Args:
-        source_twin_id: Source twin ID
-        relationship_id: Unique ID for this relationship
-        relationship: Data with $relationshipName and $targetId
+    - Only allowed relationship properties are present
 
     Returns:
         Created relationship
@@ -543,27 +532,30 @@ async def create_or_replace_relationship(
     Example:
         {
             "$relationshipName": "contains",
+            "$relationshipId": "rel-123",
+            "$sourceId": "building-1",
             "$targetId": "room-101",
             "since": "2024-01-01"
         }
     """
     client = get_client()
-    return await client.upsert_relationship(
-        source_twin_id, relationship_id, relationship
+    source_twin_id = relationship.sourceId
+    relationship_id = relationship.relationshipId
+    rel = await client.upsert_relationship(
+        source_twin_id, relationship_id, relationship.to_dataclass()
     )
+    return Relationship.model_validate(rel.to_dict())
 
 
 @mcp.tool()
 async def update_relationship(
-    twin_id: str, relationship_id: str, patch: list[JsonPatchOperation]
+    twin_id: Annotated[str, "Source twin ID"],
+    relationship_id: Annotated[str, "Relationship ID"],
+    patch: Annotated[list[JsonPatchOperation], "JSON Patch operations"],
 ) -> dict:
     """
-    Update a relationship using JSON Patch operations.
-
-    Args:
-        twin_id: Source twin ID
-        relationship_id: Relationship ID
-        patch: JSON Patch operations
+    Update relationship properties using JSON Patch operations. Only properties can be updated.
+    If you need to change name/source/target, delete and recreate the relationship.
 
     Returns:
         Success confirmation
@@ -577,13 +569,12 @@ async def update_relationship(
 
 
 @mcp.tool()
-async def delete_relationship(twin_id: str, relationship_id: str):
+async def delete_relationship(
+    twin_id: Annotated[str, "Source twin ID"],
+    relationship_id: Annotated[str, "Relationship ID"],
+) -> dict:
     """
     Delete a relationship.
-
-    Args:
-        twin_id: Source twin ID
-        relationship_id: Relationship ID to delete
 
     Returns:
         Success confirmation
@@ -600,16 +591,48 @@ async def delete_relationship(twin_id: str, relationship_id: str):
 
 
 @mcp.tool()
-async def query_digital_twins(query: str) -> list[dict]:
+async def query_digital_twins(query: Annotated[str, "Cypher query"]) -> list[dict]:
     """
-    Execute a query against the digital twins graph.
+    Execute a cypher query against the graph.
 
-    Use the ADT Query Language (SQL-like syntax) for complex graph traversals and filtering.
+    **Schema Awareness**: Always check the DTDL model (use `GetModel`) to understand the
+        properties and relationships of the twins you are querying. `GetModel` returns a
+        flattened view including inherited properties.
 
-    Args:
-        query: Query in ADT Query Language, e.g.:
-            'SELECT * FROM digitaltwins WHERE IS_OF_MODEL("dtmi:example:Room;1")'
-            'SELECT * FROM digitaltwins T WHERE T.temperature > 70'
+    **Nodes & Labels**:
+    - Digital Twins always have the `:Twin` label.
+    - DTDL Models always have the `:Model` label.
+    - Relationships are edges with the relationship name as the label.
+
+    **Filtering**:
+    - Access twin ID via `t.`$dtId``.
+    - Access model ID via `t.`$metadata`.`$model``.
+    - Access properties directly, e.g., `t.temperature`.
+
+    **Inheritance**:
+    To query all twins of a specific model AND its subtypes:
+    ```cypher
+    MATCH (t:Twin)
+    WHERE digitaltwins.is_of_model(t, 'dtmi:example:BaseModel;1')
+    RETURN t
+    ```
+
+    **Graph Traversal**:
+    - Use standard cypher syntax to traverse relationships.
+    - Example:
+        ```cypher
+        MATCH (a:Twin)-[r:contains]->(b:Twin)
+        WHERE digitaltwins.is_of_model(t, 'dtmi:example:Room;1')
+            AND b.`$metadata`.`$model` = 'dtmi:example:Thermostat;1'
+            AND b.temperature > 75
+        RETURN a, b`
+
+    **Vector / Hybrid Search**:
+    - If a property is defined as an embedding (Array<Double>), use pgvector functions.
+    - Syntax: `MATCH (t:Twin) RETURN t ORDER BY l2_distance(t.propertyName, [vector_values]) ASC LIMIT 10`
+    - You can also use `cosine_distance` if appropriate for the embedding type.
+    - Always verify the embedding property name from the DTDL model.
+
 
     Returns:
         Query results
