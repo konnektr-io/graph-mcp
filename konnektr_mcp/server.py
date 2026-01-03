@@ -28,6 +28,7 @@ from konnektr_graph.types import (
 
 from konnektr_mcp.config import get_settings
 from konnektr_mcp.client_factory import create_client
+
 # from konnektr_mcp.types import DigitalTwin, DigitalTwinMetadata, Relationship
 
 logger = logging.getLogger(__name__)
@@ -471,7 +472,7 @@ async def create_or_replace_digital_twin(
     twin = BasicDigitalTwin(
         dtId=twin_id,
         metadata=DigitalTwinMetadata(model_id),
-        **(properties or {}),
+        contents=properties or {},
     )
     new_twin = await client.upsert_digital_twin(twin_id, twin)
     return new_twin.to_dict()
@@ -607,7 +608,7 @@ async def create_or_replace_relationship(
         sourceId=source_id,
         targetId=target_id,
         relationshipName=relationship_name,
-        **(properties or {}),
+        properties=properties or {},
     )
     rel = await client.upsert_relationship(source_id, relationship_id, relationship)
     return rel.to_dict()
