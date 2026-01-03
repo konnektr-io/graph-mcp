@@ -450,26 +450,20 @@ async def delete_digital_twin(
 
 @mcp.tool()
 async def search_digital_twins(
-    search_text: str, model_id: str | None = None, limit: int = 10
+    search_text: Annotated[str, "Search query (semantic + keyword)"],
+    model_id: Annotated[Optional[str], "Optional filter by model ID"] = None,
+    limit: Annotated[int, "Maximum results"] = 10,
 ) -> list[dict]:
     """
     Search for digital twins using semantic search and keyword matching.
 
     Use this for memory retrieval based on concepts and meanings, not just exact matches.
 
-    Args:
-        search_text: Search query (semantic + keyword)
-        model_id: Optional filter by model ID
-        limit: Maximum results
-
     Returns:
         Matching twins with all their properties
     """
     client = get_client()
-    try:
-        return await client.search_twins(search_text, model_id, limit)
-    except Exception as e:
-        return [{"error": f"Search failed: {str(e)}"}]
+    return await client.search_twins(search_text, model_id, limit)
 
 
 # ========== Relationship Tools ==========
