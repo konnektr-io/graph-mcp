@@ -342,6 +342,44 @@ async def create_model(model: Annotated[dict, "DTDL model definition"]) -> dict:
     Any dependent models must already exist in the system.
     The system validates DTDL syntax and will return detailed error messages if the schema is invalid.
 
+    Example basic model:
+        {
+            "@id": "dtmi:example:Space;1",
+            "@type": "Interface",
+            "displayName": {"en":"Space"},
+            "description": {"en":"A physical space in a building."},
+            "contents": [
+                {
+                    "@type": "Property",
+                    "name": "name",
+                    "displayName": {"en":"Name"},
+                    "description": {"en":"The name of the room."},
+                    "schema": "string"
+                }
+            ],
+            "@context": "dtmi:dtdl:context;4"
+        }
+    Example with inheritance and quantitative property:
+        {
+            "@id": "dtmi:example:Room;1",
+            "@type": "Interface",
+            "displayName": {"en":"Room"},
+            "description": {"en":"A room in a building."},
+            "extends": ["dtmi:example:Space;1"],
+            "contents": [
+                {
+                    "@type": ["Property","Temperature"],
+                    "name": "temperature",
+                    "displayName": {"en":"Temperature"},
+                    "description": {"en":"The current room temperature in Celsius."},
+                    "schema": "double",
+                    "unit": "degreeCelsius",
+                    "writable": true
+                }
+            ],
+            "@context": ["dtmi:dtdl:context;4","dtmi:dtdl:extension:quantitativeTypes;2"]
+        }
+
     Returns:
         Success message with count of created models
     """
