@@ -16,7 +16,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from fastmcp import FastMCP
 from fastmcp.server.auth import OIDCProxy
 from mcp.types import Icon
-
+from key_value.aio.stores.disk import DiskStore
 from konnektr_graph.aio import KonnektrGraphClient
 from konnektr_graph.types import (
     DtdlInterface,
@@ -248,6 +248,7 @@ auth = (
         # Auth0 requires audience parameter to issue JWT tokens
         extra_authorize_params={"audience": settings.auth0_audience},
         extra_token_params={"audience": settings.auth0_audience},
+        client_storage=DiskStore(directory="/var/lib/fastmcp/oauth"),
     )
     if settings.auth_enabled
     else None
