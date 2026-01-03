@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing_extensions import Annotated
 from urllib.parse import parse_qs
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
@@ -21,11 +21,14 @@ from konnektr_graph.aio import KonnektrGraphClient
 from konnektr_graph.types import (
     DtdlInterface,
     JsonPatchOperation,
+    BasicDigitalTwin,
+    BasicRelationship,
+    DigitalTwinMetadata,
 )
 
 from konnektr_mcp.config import get_settings
 from konnektr_mcp.client_factory import create_client
-from konnektr_mcp.types import DigitalTwin, Relationship
+# from konnektr_mcp.types import DigitalTwin, DigitalTwinMetadata, Relationship
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +393,7 @@ async def search_models(
 @mcp.tool(annotations={"readOnlyHint": True})
 async def get_digital_twin(
     twin_id: Annotated[str, "The unique ID of the digital twin"],
-) -> DigitalTwin:
+) -> dict:
     """
     Get a digital twin by its ID.
 
@@ -402,15 +405,19 @@ async def get_digital_twin(
     """
     client = get_client()
     twin = await client.get_digital_twin(twin_id)
-    return DigitalTwin.model_validate(twin.to_dict())
+    return twin.to_dict()
+    # return DigitalTwin.model_validate(twin.to_dict())
 
 
 @mcp.tool()
 async def create_or_replace_digital_twin(
-    twin: Annotated[
-        DigitalTwin, "Twin data including $dtId and $metadata with $model property"
-    ],
-) -> DigitalTwin:
+    twin_id: Annotated[str, "The unique ID of the digital twin"],
+    model_id: Annotated[str, "The DTMI of the model this twin conforms to"],
+    properties: Annotated[
+        Optional[Dict[str, Any]],
+        """A dictionary of twin properties (e.g., {"temperature": 70}).""",
+    ] = None,
+) -> dict:
     """
     Create a new digital twin or replace an existing one.
 
@@ -421,19 +428,16 @@ async def create_or_replace_digital_twin(
 
     Returns:
         Created/updated twin data
-
-    Example:
-        {
-            "$dtId": "room-101",
-            "$metadata": {"$model": "dtmi:example:Room;1"},
-            "temperature": 72.5,
-            "humidity": 45
-        }
     """
     client = get_client()
-    twin_id = twin.dtId
-    new_twin = await client.upsert_digital_twin(twin_id, twin.to_dataclass())
-    return DigitalTwin.model_validate(new_twin.to_dict())
+    twin = BasicDigitalTwin(
+        dtId=twin_id,
+        metadata=DigitalTwinMetadata(model_id),
+        **(properties or {}),
+    )
+    new_twin = await client.upsert_digital_twin(twin_id, twin)
+    return new_twin.to_dict()
+    # return DigitalTwin.model_validate(new_twin.to_dict())
 
 
 @mcp.tool()
@@ -493,11 +497,11 @@ async def search_digital_twins(
 
 @mcp.tool()
 async def list_relationships(
-    twin_id: Annotated[str, "Source twin ID"],
+    source_id: Annotated[str, "Source twin ID"],
     relationship_name: Annotated[
         Optional[str], "Optional filter by relationship name"
     ] = None,
-) -> list[Relationship]:
+) -> list[dict]:
     """
     List all outgoing relationships from a digital twin.
 
@@ -506,16 +510,16 @@ async def list_relationships(
     """
     client = get_client()
     relationships = []
-    async for rel in client.list_relationships(twin_id, relationship_name):
-        relationships.append(Relationship.model_validate(rel.to_dict()))
+    async for rel in client.list_relationships(source_id, relationship_name):
+        relationships.append(rel.to_dict())
     return relationships
 
 
 @mcp.tool()
 async def get_relationship(
-    twin_id: Annotated[str, "Source twin ID"],
+    source_id: Annotated[str, "Source twin ID"],
     relationship_id: Annotated[str, "The relationship ID"],
-) -> Relationship:
+) -> dict:
     """
     Get a specific relationship by ID.
 
@@ -523,17 +527,22 @@ async def get_relationship(
         Relationship data
     """
     client = get_client()
-    rel = await client.get_relationship(twin_id, relationship_id)
-    return Relationship.model_validate(rel.to_dict())
+    rel = await client.get_relationship(source_id, relationship_id)
+    return rel.to_dict()
+    # return Relationship.model_validate(rel.to_dict())
 
 
 @mcp.tool()
 async def create_or_replace_relationship(
-    relationship: Annotated[
-        Relationship,
-        "Full relationship with $relationshipId, $relationshipName, $sourceId, $targetId and optional properties.",
-    ],
-) -> Relationship:
+    relationship_id: Annotated[str, "The unique ID of the relationship"],
+    source_id: Annotated[str, "Source twin ID"],
+    target_id: Annotated[str, "Target twin ID"],
+    relationship_name: Annotated[str, "The relationship name as defined in the model"],
+    properties: Annotated[
+        Optional[Dict[str, Any]],
+        """A dictionary of relationship properties (e.g., {"since": "2024-01-01"}).""",
+    ] = None,
+) -> dict:
     """
     Create a relationship between two digital twins.
 
@@ -555,17 +564,21 @@ async def create_or_replace_relationship(
         }
     """
     client = get_client()
-    source_twin_id = relationship.sourceId
-    relationship_id = relationship.relationshipId
-    rel = await client.upsert_relationship(
-        source_twin_id, relationship_id, relationship.to_dataclass()
+    relationship = BasicRelationship(
+        relationshipId=relationship_id,
+        sourceId=source_id,
+        targetId=target_id,
+        relationshipName=relationship_name,
+        **(properties or {}),
     )
-    return Relationship.model_validate(rel.to_dict())
+    rel = await client.upsert_relationship(source_id, relationship_id, relationship)
+    return rel.to_dict()
+    # return Relationship.model_validate(rel.to_dict())
 
 
 @mcp.tool()
 async def update_relationship(
-    twin_id: Annotated[str, "Source twin ID"],
+    source_id: Annotated[str, "Source twin ID"],
     relationship_id: Annotated[str, "Relationship ID"],
     patch: Annotated[list[JsonPatchOperation], "JSON Patch operations"],
 ) -> dict:
@@ -577,7 +590,7 @@ async def update_relationship(
         Success confirmation
     """
     client = get_client()
-    await client.update_relationship(twin_id, relationship_id, patch)
+    await client.update_relationship(source_id, relationship_id, patch)
     return {
         "success": True,
         "message": f"Relationship '{relationship_id}' updated successfully",
@@ -586,7 +599,7 @@ async def update_relationship(
 
 @mcp.tool(annotations={"destructiveHint": True})
 async def delete_relationship(
-    twin_id: Annotated[str, "Source twin ID"],
+    source_id: Annotated[str, "Source twin ID"],
     relationship_id: Annotated[str, "Relationship ID"],
 ) -> dict:
     """
@@ -596,7 +609,7 @@ async def delete_relationship(
         Success confirmation
     """
     client = get_client()
-    await client.delete_relationship(twin_id, relationship_id)
+    await client.delete_relationship(source_id, relationship_id)
     return {
         "success": True,
         "message": f"Relationship '{relationship_id}' deleted successfully",
