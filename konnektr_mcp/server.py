@@ -14,8 +14,8 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import OIDCProxy
-from fastmcp.server.dependencies import get_access_token
 
 from konnektr_graph.aio import KonnektrGraphClient
 from konnektr_graph.types import (
@@ -270,9 +270,10 @@ All data must conform to DTDL models - the system will reject invalid structures
 ## Workflow:
 1. **Explore Models**: Use `list_models` or `search_models` to understand available schemas
 2. **Get Model Details**: Use `get_model` to see full schema including properties and relationships
-3. **Create Twins**: Store validated data as digital twins conforming to models
-4. **Build Graph**: Connect twins using relationships defined in the models
-5. **Search & Query**: Find information using semantic search or graph queries
+3. **Create Models**: Use `create_model` to add new DTDL models. Prefer extending existing models.
+4. **Create Twins**: Store validated data as digital twins conforming to models
+5. **Build Graph**: Connect twins using relationships defined in the models
+6. **Search & Query**: Find information using semantic search or graph queries
 
 The system will provide detailed validation errors if you try to create twins or relationships that don't match the schema.""",
     stateless_http=True,
@@ -343,8 +344,14 @@ async def create_model(model: Annotated[dict, "DTDL model definition"]):
     """
     client = get_client()
     dtdl_model = DtdlInterface.from_dict(model)
-    await client.create_models([dtdl_model])
-    return f"Successfully created model {dtdl_model.id}."
+    try:
+        await client.create_models([dtdl_model])
+        return {
+            "success": True,
+            "message": f"Successfully created model {dtdl_model.id}.",
+        }
+    except Exception as e:
+        raise ToolError(f"Failed to create model: {str(e)}") from e
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
