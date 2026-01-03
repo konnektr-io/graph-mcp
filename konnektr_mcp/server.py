@@ -348,6 +348,23 @@ async def create_model(model: Annotated[dict, "DTDL model definition"]) -> dict:
     return {"success": True, "message": f"Successfully created model {dtdl_model.id}."}
 
 
+@mcp.tool(annotations={"destructiveHint": True})
+async def delete_model(
+    model_id: Annotated[
+        str, "The DTMI of the model to delete (e.g. 'dtmi:example:Room;1')"
+    ],
+) -> dict:
+    """
+    Delete a DTDL model. All dependent models and digital twins must be deleted first.
+
+    Returns:
+        Success confirmation
+    """
+    client = get_client()
+    await client.delete_model(model_id)
+    return {"success": True, "message": f"Model '{model_id}' deleted successfully"}
+
+
 @mcp.tool(annotations={"readOnlyHint": True})
 async def search_models(
     search_text: Annotated[
@@ -421,7 +438,7 @@ async def create_or_replace_digital_twin(
 
 @mcp.tool()
 async def update_digital_twin(
-    twin_id: Annotated[str, "ID of the twin to delete"],
+    twin_id: Annotated[str, "ID of the twin to update"],
     patch: Annotated[
         list[JsonPatchOperation],
         """JSON Patch operations, e.g., [{"op": "replace", "path": "/temperature", "value": 75}]""",
@@ -567,7 +584,7 @@ async def update_relationship(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations={"destructiveHint": True})
 async def delete_relationship(
     twin_id: Annotated[str, "Source twin ID"],
     relationship_id: Annotated[str, "Relationship ID"],
