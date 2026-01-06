@@ -1,5 +1,154 @@
 # Changelog & Migration Guide
 
+## Version 0.2.0 - Embedding Support
+
+### Overview
+
+Added comprehensive embedding support for semantic search capabilities, enabling AI agents to find information based on meaning and context.
+
+### Major Features
+
+#### 1. Embedding Generation 🧠
+
+**New Capability:**
+- Automatic embedding generation when creating/updating digital twins
+- Support for multiple embedding providers:
+  - OpenAI (default, `text-embedding-3-small`)
+  - Azure OpenAI
+  - Custom HTTP endpoints (OpenAI-compatible)
+- Fixed 1536 dimensions for consistency
+
+**New Module:**
+- `konnektr_mcp/embeddings.py` - Embedding service with provider abstraction
+
+**Configuration:**
+```env
+EMBEDDING_ENABLED=true
+EMBEDDING_PROVIDER=openai  # or azure_openai, custom
+OPENAI_API_KEY=sk-your-key
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_DIMENSIONS=1536
+```
+
+#### 2. Updated Twin Operations 📝
+
+**create_or_replace_digital_twin:**
+- New `embeddings` parameter (replaces `embedding_properties`)
+- Pass dict mapping property names to text content
+- Server generates vectors automatically
+
+```python
+# NEW (v0.2.0)
+await create_or_replace_digital_twin(
+    twin_id="memory-001",
+    model_id="dtmi:example:Memory;1",
+    properties={"content": "User prefers dark mode"},
+    embeddings={
+        "contentEmbedding": "User prefers dark mode interface"
+    }
+)
+```
+
+**update_digital_twin_embeddings:**
+- Now takes `embeddings` dict instead of property list
+- Pass new text content, server regenerates vectors
+
+```python
+await update_digital_twin_embeddings(
+    twin_id="memory-001",
+    embeddings={
+        "contentEmbedding": "Updated: User now prefers light mode"
+    }
+)
+```
+
+#### 3. Hybrid Search Tools 🔍
+
+**Enhanced search_digital_twins:**
+- New `embedding_property` parameter
+- New `use_vector_search` flag
+- Combines vector similarity with keyword matching
+
+**New vector_search_with_graph:**
+- Pure vector search with fine-grained control
+- Optional graph context expansion (related twins)
+- Choice of distance metric (cosine, l2)
+
+**Enhanced search_models:**
+- Vector similarity support for model search
+- New `use_vector_search` flag
+
+**New get_embedding_info:**
+- Returns embedding service configuration
+- Useful for verifying setup
+
+#### 4. Dependencies
+
+**Added:**
+- `openai>=1.0.0` - OpenAI/Azure OpenAI SDK
+- `httpx>=0.27.0` - For custom HTTP endpoints
+
+### Migration from v0.1.0
+
+1. **Update environment variables:**
+   ```env
+   # Add these to your .env
+   EMBEDDING_ENABLED=true
+   OPENAI_API_KEY=sk-your-key
+   ```
+
+2. **Update twin creation calls:**
+   ```python
+   # OLD (v0.1.0)
+   await create_or_replace_digital_twin(
+       twin_id="...",
+       model_id="...",
+       properties={...},
+       embedding_properties=["prop1"]  # REMOVED
+   )
+   
+   # NEW (v0.2.0)
+   await create_or_replace_digital_twin(
+       twin_id="...",
+       model_id="...",
+       properties={...},
+       embeddings={"propEmbedding": "text to embed"}  # NEW
+   )
+   ```
+
+3. **Update embedding updates:**
+   ```python
+   # OLD (v0.1.0)
+   await update_digital_twin_embeddings(
+       twin_id="...",
+       embedding_properties=["prop1"]  # REMOVED
+   )
+   
+   # NEW (v0.2.0)
+   await update_digital_twin_embeddings(
+       twin_id="...",
+       embeddings={"propEmbedding": "new text"}  # NEW
+   )
+   ```
+
+4. **Update search calls (optional enhancements):**
+   ```python
+   # Enhanced with vector search
+   await search_digital_twins(
+       search_text="...",
+       embedding_property="contentEmbedding",  # NEW
+       use_vector_search=True  # NEW (default)
+   )
+   ```
+
+### Documentation
+
+- New: [docs/embeddings.md](docs/embeddings.md) - Complete embedding guide
+- Updated: [docs/getting-started.md](docs/getting-started.md) - Configuration section
+- Updated: [docs/usage-guide.md](docs/usage-guide.md) - Workflow examples
+
+---
+
 ## Version 0.1.0 - Complete Restructure
 
 ### Overview

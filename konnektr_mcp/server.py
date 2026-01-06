@@ -28,6 +28,14 @@ from konnektr_graph.types import (
 
 from konnektr_mcp.config import get_settings
 from konnektr_mcp.client_factory import create_client
+from konnektr_mcp.embeddings import (
+    EmbeddingProvider,
+    EmbeddingService,
+    create_embedding_service,
+    set_embedding_service,
+    get_embedding_service,
+    is_embedding_service_configured,
+)
 
 # from konnektr_mcp.types import DigitalTwin, DigitalTwinMetadata, Relationship
 
@@ -238,6 +246,76 @@ class CustomMiddleware:
 
 settings = get_settings()
 
+# Initialize embedding service if enabled
+if settings.embedding_enabled:
+    try:
+        provider = EmbeddingProvider(settings.embedding_provider)
+
+        if provider == EmbeddingProvider.OPENAI:
+            if settings.openai_api_key:
+                embedding_service = create_embedding_service(
+                    provider=provider,
+                    api_key=settings.openai_api_key,
+                    model=settings.openai_embedding_model,
+                    dimensions=settings.embedding_dimensions,
+                    openai_base_url=settings.openai_base_url,
+                )
+                set_embedding_service(embedding_service)
+                logger.info(
+                    f"Initialized OpenAI embedding service with model {settings.openai_embedding_model}"
+                )
+            else:
+                logger.warning(
+                    "Embedding enabled but OPENAI_API_KEY not set. Embeddings will not be generated."
+                )
+
+        elif provider == EmbeddingProvider.AZURE_OPENAI:
+            if (
+                settings.azure_openai_api_key
+                and settings.azure_openai_endpoint
+                and settings.azure_openai_deployment_name
+            ):
+                embedding_service = create_embedding_service(
+                    provider=provider,
+                    api_key=settings.azure_openai_api_key,
+                    dimensions=settings.embedding_dimensions,
+                    azure_endpoint=settings.azure_openai_endpoint,
+                    azure_deployment_name=settings.azure_openai_deployment_name,
+                    azure_api_version=settings.azure_openai_api_version,
+                )
+                set_embedding_service(embedding_service)
+                logger.info(
+                    f"Initialized Azure OpenAI embedding service with deployment {settings.azure_openai_deployment_name}"
+                )
+            else:
+                logger.warning(
+                    "Embedding enabled but Azure OpenAI settings incomplete. "
+                    "Required: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT_NAME"
+                )
+
+        elif provider == EmbeddingProvider.GEMINI:
+            if settings.google_api_key:
+                embedding_service = create_embedding_service(
+                    provider=provider,
+                    api_key=settings.google_api_key,
+                    model=settings.google_embedding_model,
+                    dimensions=settings.embedding_dimensions,
+                )
+                set_embedding_service(embedding_service)
+                logger.info(
+                    f"Initialized Google Gemini embedding service with model {settings.google_embedding_model}"
+                )
+            else:
+                logger.warning(
+                    "Embedding enabled with Gemini provider but GOOGLE_API_KEY not set. "
+                    "Embeddings will not be generated."
+                )
+
+    except Exception as e:
+        logger.error(f"Failed to initialize embedding service: {e}", exc_info=True)
+else:
+    logger.info("Embedding service disabled via EMBEDDING_ENABLED=false")
+
 # Use FastMCP's OIDC proxy for Auth0 with shared audience
 # Token has audience: https://graph.konnektr.io (same as API)
 # Auth0 requires audience in both authorize and token requests to issue JWTs
@@ -412,18 +490,49 @@ async def search_models(
     search_text: Annotated[
         Optional[str], "Search query (searches display name, description, ID)"
     ] = None,
+    use_vector_search: Annotated[
+        bool,
+        "Enable vector similarity search using embeddings (requires configured embedding service)",
+    ] = True,
     limit: Annotated[int, "Maximum number of results"] = 10,
 ) -> list[dict]:
     """
-    Search for DTDL models using semantic search and keyword matching.
-    Searches across model IDs, display names, and descriptions to help you find relevant schemas.
+    Search for DTDL models using hybrid search (semantic + keyword matching).
 
+    Combines:
+    - **Vector similarity**: Finds semantically similar models based on meaning (if embedding service configured)
+    - **Keyword matching**: Matches against model IDs, display names, and descriptions
+
+    The search automatically generates an embedding for your query and compares it against model embeddings.
 
     Returns:
-        Matching models with IDs, display names, and descriptions
+        Matching models with IDs, display names, descriptions, and similarity scores
     """
     client = get_client()
-    return await client.search_models(search_text or "", limit)
+
+    # If vector search is enabled and embedding service is configured, generate query embedding
+    query_embedding = None
+    if use_vector_search and search_text and is_embedding_service_configured():
+        try:
+            embedding_service = get_embedding_service()
+            query_embedding = await embedding_service.generate_embedding(search_text)
+            if not query_embedding:
+                raise ValueError("Received empty embedding from service")
+            logger.debug(
+                f"Generated query embedding with {len(query_embedding)} dimensions"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to generate query embedding: {e}. Falling back to keyword search."
+            )
+
+    # The SDK's search_models will handle both vector and keyword search
+    # Pass the query embedding if available
+    return await client.search_models(
+        search_text or "",
+        limit,
+        vector=query_embedding,
+    )
 
 
 # ========== Digital Twin Tools ==========
@@ -456,6 +565,12 @@ async def create_or_replace_digital_twin(
         Optional[Dict[str, Any]],
         """A dictionary of twin properties (e.g., {"temperature": 70}).""",
     ] = None,
+    embeddings: Annotated[
+        Optional[Dict[str, str]],
+        """A dictionary mapping embedding property names to their text content for vectorization.
+        Example: {"descriptionEmbedding": "This is the description text to embed", "contentEmbedding": "Another text"}
+        The server will generate vector embeddings from the text and store them in the specified properties.""",
+    ] = None,
 ) -> dict:
     """
     Create a new digital twin or replace an existing one.
@@ -465,18 +580,55 @@ async def create_or_replace_digital_twin(
     - Property types match the schema
     - No extra properties beyond the model definition
 
+    Use the `embeddings` parameter to automatically generate and store vector embeddings for semantic search.
+    Provide a dict mapping property names to text content - the server generates the vectors.
+
+    Example:
+        properties = {"name": "User Preferences", "description": "UI and display settings"}
+        embeddings = {"descriptionEmbedding": "User prefers dark mode and minimal interface design"}
+
     Returns:
         Created/updated twin data
     """
     client = get_client()
+
+    # Prepare the properties with generated embeddings
+    all_properties = dict(properties) if properties else {}
+
+    # Generate embeddings if provided and service is configured
+    if embeddings and is_embedding_service_configured():
+        embedding_service = get_embedding_service()
+
+        # Batch all texts for efficient embedding generation
+        property_names = list(embeddings.keys())
+        texts = [embeddings[name] for name in property_names]
+
+        logger.debug(f"Generating embeddings for {len(texts)} properties")
+        generated_embeddings = await embedding_service.generate_embeddings(texts)
+
+        # Add embeddings to properties
+        for name, embedding in zip(property_names, generated_embeddings):
+            all_properties[name] = embedding
+            if not embedding:
+                logger.warning(f"Generated empty embedding for property '{name}'")
+            else:
+                logger.debug(
+                    f"Generated embedding for '{name}' with {len(embedding)} dimensions"
+                )
+
+    elif embeddings and not is_embedding_service_configured():
+        logger.warning(
+            "Embeddings requested but embedding service not configured. "
+            "Set EMBEDDING_ENABLED=true and configure provider settings."
+        )
+
     twin = BasicDigitalTwin(
         dtId=twin_id,
         metadata=DigitalTwinMetadata(model_id),
-        contents=properties or {},
+        contents=all_properties,
     )
     new_twin = await client.upsert_digital_twin(twin_id, twin)
     return new_twin.to_dict()
-    # return DigitalTwin.model_validate(new_twin.to_dict())
 
 
 @mcp.tool()
@@ -496,6 +648,65 @@ async def update_digital_twin(
     client = get_client()
     await client.update_digital_twin(twin_id, patch)
     return {"success": True, "message": f"Twin '{twin_id}' updated successfully"}
+
+
+@mcp.tool()
+async def update_digital_twin_embeddings(
+    twin_id: Annotated[str, "ID of the twin to update"],
+    embeddings: Annotated[
+        Dict[str, str],
+        """A dictionary mapping embedding property names to their new text content.
+        Example: {"descriptionEmbedding": "Updated description text", "contentEmbedding": "Updated content"}
+        The server will generate new embeddings and update the twin via JSON Patch.""",
+    ],
+) -> dict:
+    """
+    Update the vector embeddings for specified properties of a digital twin.
+
+    This is useful when the underlying text data has changed and you want to refresh the embeddings
+    used for semantic search. The function:
+    1. Generates new embeddings from the provided text content
+    2. Updates the twin properties using JSON Patch operations
+
+    Example:
+        embeddings = {"descriptionEmbedding": "New user preference: dark mode with high contrast"}
+
+    Returns:
+        Success confirmation with details of updated properties
+    """
+    if not is_embedding_service_configured():
+        return {
+            "success": False,
+            "error": "Embedding service not configured. Set EMBEDDING_ENABLED=true and configure provider.",
+        }
+
+    embedding_service = get_embedding_service()
+    client = get_client()
+
+    # Generate embeddings for all provided texts
+    property_names = list(embeddings.keys())
+    texts = [embeddings[name] for name in property_names]
+
+    logger.debug(
+        f"Generating embeddings for {len(texts)} properties on twin '{twin_id}'"
+    )
+    generated_embeddings = await embedding_service.generate_embeddings(texts)
+
+    # Build JSON Patch operations to update each embedding property
+    patch_operations: list[JsonPatchOperation] = []
+    for name, embedding in zip(property_names, generated_embeddings):
+        patch_operations.append(
+            JsonPatchOperation(op="replace", path=f"/{name}", value=embedding)
+        )
+
+    # Apply the patch
+    await client.update_digital_twin(twin_id, patch_operations)
+
+    return {
+        "success": True,
+        "message": f"Updated {len(property_names)} embedding(s) for twin '{twin_id}'",
+        "updated_properties": property_names,
+    }
 
 
 @mcp.tool(annotations={"destructiveHint": True})
@@ -527,19 +738,201 @@ async def delete_digital_twin(
 @mcp.tool()
 async def search_digital_twins(
     search_text: Annotated[str, "Search query (semantic + keyword)"],
-    model_id: Annotated[Optional[str], "Optional filter by model ID"] = None,
+    model_id: Annotated[Optional[str], "Optional filter by model ID (DTMI)"] = None,
+    embedding_property: Annotated[
+        Optional[str],
+        "Name of the embedding property to search against (e.g., 'descriptionEmbedding'). If not specified, uses default embedding property.",
+    ] = None,
+    use_vector_search: Annotated[
+        bool,
+        "Enable vector similarity search using embeddings (requires configured embedding service)",
+    ] = True,
     limit: Annotated[int, "Maximum results"] = 10,
 ) -> list[dict]:
     """
-    Search for digital twins using semantic search and keyword matching.
+    Search for digital twins using hybrid search (vector similarity + keyword matching).
 
-    Use this for memory retrieval based on concepts and meanings, not just exact matches.
+    Combines:
+    - **Vector similarity**: Finds semantically similar twins based on meaning
+    - **Keyword matching**: Matches against twin properties
+    - **Model filtering**: Optionally filter by specific DTDL model types
+
+    The search generates an embedding for your query and compares against twin embedding properties.
+
+    Example use cases:
+    - Find memories about "user interface preferences" → matches "dark mode settings", "UI theme"
+    - Search for "network issues" → matches "connectivity problems", "WiFi disconnections"
 
     Returns:
-        Matching twins with all their properties
+        Matching twins with all properties and similarity scores
     """
     client = get_client()
-    return await client.search_twins(search_text, model_id, limit)
+
+    # If vector search is enabled and embedding service is configured, generate query embedding
+    query_embedding = None
+    if use_vector_search and is_embedding_service_configured():
+        try:
+            embedding_service = get_embedding_service()
+            query_embedding = await embedding_service.generate_embedding(search_text)
+            if not query_embedding:
+                raise ValueError("Received empty embedding from service")
+            logger.debug(
+                f"Generated query embedding with {len(query_embedding)} dimensions"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to generate query embedding: {e}. Falling back to keyword search."
+            )
+
+    # Pass query embedding and optional embedding property name to SDK
+    return await client.search_twins(
+        search_text,
+        model_id,
+        limit,
+        vector=query_embedding,
+        embedding_property=embedding_property,
+    )
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def vector_search_with_graph(
+    search_text: Annotated[str, "Search query to find semantically similar content"],
+    embedding_property: Annotated[
+        str,
+        "Name of the embedding property to search against (e.g., 'descriptionEmbedding', 'contentEmbedding')",
+    ],
+    model_id: Annotated[Optional[str], "Optional DTMI to filter by model type"] = None,
+    distance_metric: Annotated[
+        str,
+        "Distance metric to use: 'cosine' (recommended for most cases) or 'l2' (Euclidean)",
+    ] = "cosine",
+    include_graph_context: Annotated[
+        bool,
+        "If true, also return related twins via relationships (1-hop neighborhood)",
+    ] = False,
+    limit: Annotated[int, "Maximum results to return"] = 10,
+) -> dict:
+    """
+    Advanced vector similarity search with optional graph context expansion.
+
+    This tool performs pure vector search using pgvector and can optionally expand results
+    to include related twins via graph relationships.
+
+    **How it works**:
+    1. Generates an embedding for your search query
+    2. Finds twins with similar embedding vectors using the specified distance metric
+    3. Optionally retrieves related twins via relationships (graph expansion)
+
+    **Distance metrics**:
+    - `cosine`: Best for semantic similarity (normalized, range 0-2)
+    - `l2`: Euclidean distance (good for comparing absolute positions)
+
+    **When to use this vs search_digital_twins**:
+    - Use this for direct vector search with fine-grained control
+    - Use search_digital_twins for general-purpose hybrid search
+
+    Example:
+        vector_search_with_graph(
+            search_text="machine learning model training",
+            embedding_property="contentEmbedding",
+            model_id="dtmi:example:Document;1",
+            include_graph_context=True
+        )
+
+    Returns:
+        Dict with:
+        - matches: List of matching twins with similarity scores
+        - related: Related twins via relationships (if include_graph_context=True)
+        - query_embedding_dims: Dimension count of generated embedding
+    """
+    if not is_embedding_service_configured():
+        return {
+            "success": False,
+            "error": "Embedding service not configured. Set EMBEDDING_ENABLED=true and configure provider.",
+        }
+
+    embedding_service = get_embedding_service()
+    client = get_client()
+
+    # Generate embedding for the search text
+    query_embedding = await embedding_service.generate_embedding(search_text)
+    if not query_embedding:
+        return {
+            "success": False,
+            "error": "Failed to generate embedding for the search text.",
+        }
+    logger.debug(f"Generated query embedding with {len(query_embedding)} dimensions")
+
+    # Build the vector search query using Cypher + pgvector
+    distance_func = "cosine_distance" if distance_metric == "cosine" else "l2_distance"
+
+    # Format embedding as a string for the Cypher query
+    embedding_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+
+    # Base query for vector search
+    if model_id:
+        query = f"""
+        MATCH (t:Twin)
+        WHERE digitaltwins.is_of_model(t, '{model_id}')
+        RETURN t, {distance_func}(t.`{embedding_property}`, {embedding_str}) as distance
+        ORDER BY distance ASC
+        LIMIT {limit}
+        """
+    else:
+        query = f"""
+        MATCH (t:Twin)
+        WHERE t.`{embedding_property}` IS NOT NULL
+        RETURN t, {distance_func}(t.`{embedding_property}`, {embedding_str}) as distance
+        ORDER BY distance ASC
+        LIMIT {limit}
+        """
+
+    # Execute the query
+    matches = []
+    async for result in client.query_twins(query):
+        matches.append(result)
+
+    result = {
+        "matches": matches,
+        "query_embedding_dims": len(query_embedding),
+        "distance_metric": distance_metric,
+    }
+
+    # If graph context requested, get related twins
+    if include_graph_context and matches:
+        # Get IDs of matched twins
+        twin_ids = []
+        for match in matches:
+            if isinstance(match, dict):
+                # Handle both dict and twin object formats
+                if "t" in match and isinstance(match["t"], dict):
+                    twin_ids.append(match["t"].get("$dtId"))
+                elif "$dtId" in match:
+                    twin_ids.append(match["$dtId"])
+
+        related = []
+        for twin_id in twin_ids[:5]:  # Limit graph expansion to top 5 matches
+            if twin_id:
+                # Get outgoing relationships
+                async for rel in client.list_relationships(twin_id):
+                    related.append(
+                        {
+                            "type": "outgoing",
+                            "relationship": rel.to_dict(),
+                        }
+                    )
+                # Get incoming relationships
+                async for rel in client.list_incoming_relationships(twin_id):
+                    related.append(
+                        {
+                            "type": "incoming",
+                            "relationship": rel.to_dict(),
+                        }
+                    )
+
+        result["related"] = related
+
+    return result
 
 
 # ========== Relationship Tools ==========
@@ -721,6 +1114,43 @@ async def query_digital_twins(query: Annotated[str, "Cypher query"]) -> list[dic
     async for result in client.query_twins(query):
         results.append(result)
     return results
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def get_embedding_info() -> dict:
+    """
+    Get information about the configured embedding service.
+
+    Returns details about:
+    - Whether embeddings are enabled
+    - The configured provider (OpenAI, Azure OpenAI, or custom)
+    - The embedding dimension size
+    - Model name (if applicable)
+
+    Use this to verify embedding configuration before creating twins with embeddings.
+    """
+    if not is_embedding_service_configured():
+        return {
+            "enabled": False,
+            "message": "Embedding service not configured. Set EMBEDDING_ENABLED=true and configure provider settings.",
+        }
+
+    embedding_service = get_embedding_service()
+
+    return {
+        "enabled": True,
+        "provider": settings.embedding_provider,
+        "dimensions": embedding_service.dimensions,
+        "model": (
+            settings.openai_embedding_model
+            if settings.embedding_provider == "openai"
+            else (
+                settings.azure_openai_deployment_name
+                if settings.embedding_provider == "azure_openai"
+                else settings.google_embedding_model
+            )
+        ),
+    }
 
 
 # ========== Starlette App ==========

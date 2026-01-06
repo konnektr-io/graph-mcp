@@ -104,14 +104,16 @@ Add to your `claude_desktop_config.json`:
 - `list_models` - List all available DTDL models
 - `get_model` - Get complete model definition
 - `create_models` - Create new DTDL models
-- `search_models` - Semantic search for models
+- `search_models` - Hybrid semantic + keyword search for models
 
 ### Digital Twins (Data)
 - `get_digital_twin` - Get twin by ID
-- `create_or_replace_digital_twin` - Create/update twin
+- `create_or_replace_digital_twin` - Create/update twin with optional embeddings
 - `update_digital_twin` - JSON Patch update
+- `update_digital_twin_embeddings` - Update embeddings from new text content
 - `delete_digital_twin` - Delete twin
-- `search_digital_twins` - Semantic search for twins
+- `search_digital_twins` - Hybrid semantic + keyword search for twins
+- `vector_search_with_graph` - Advanced vector search with graph context
 
 ### Relationships (Connections)
 - `list_relationships` - List twin's relationships
@@ -121,11 +123,12 @@ Add to your `claude_desktop_config.json`:
 - `delete_relationship` - Delete relationship
 
 ### Queries
-- `query_digital_twins` - Execute ADT Query Language queries
+- `query_digital_twins` - Execute Cypher queries with vector support
+- `get_embedding_info` - Get embedding service configuration
 
 ## Example Usage
 
-### Storing Agent Memory
+### Storing Agent Memory with Embeddings
 
 ```python
 # 1. Discover available schemas
@@ -136,28 +139,40 @@ models = await list_models()
 model = await get_model(model_id="dtmi:agent:Memory;1")
 # Returns full DTDL with properties and relationships
 
-# 3. Store validated memory
-twin = {
-    "$metadata": {"$model": "dtmi:agent:Memory;1"},
-    "content": "User prefers concise technical responses",
-    "timestamp": "2024-01-15T10:30:00Z",
-    "importance": 9
-}
+# 3. Store validated memory WITH embeddings for semantic search
 result = await create_or_replace_digital_twin(
     twin_id="memory-pref-001",
-    twin=twin
+    model_id="dtmi:agent:Memory;1",
+    properties={
+        "content": "User prefers concise technical responses",
+        "timestamp": "2024-01-15T10:30:00Z",
+        "importance": 9
+    },
+    embeddings={
+        # Server generates vector embedding from this text
+        "contentEmbedding": "User prefers concise technical responses with code examples"
+    }
 )
 ```
 
 ### Semantic Search
 
 ```python
-# Find relevant memories by meaning
+# Find relevant memories by meaning (uses vector similarity)
 results = await search_digital_twins(
     search_text="how does user like to communicate",
+    embedding_property="contentEmbedding",
     limit=5
 )
 # Returns twins semantically similar to query
+
+# Advanced: Vector search with graph context
+results = await vector_search_with_graph(
+    search_text="communication preferences",
+    embedding_property="contentEmbedding",
+    distance_metric="cosine",
+    include_graph_context=True
+)
 ```
 
 ### Building Knowledge Graph
@@ -165,19 +180,43 @@ results = await search_digital_twins(
 ```python
 # Create relationship between memories
 await create_or_replace_relationship(
-    source_twin_id="memory-001",
     relationship_id="rel-001",
-    relationship={
-        "$relationshipName": "relatedTo",
-        "$targetId": "memory-002"
-    }
+    source_id="memory-001",
+    target_id="memory-002",
+    relationship_name="relatedTo"
 )
 
-# Query graph
+# Query graph with vector ordering
 results = await query_digital_twins(
-    query="SELECT * FROM RELATIONSHIPS WHERE $sourceId = 'memory-001'"
+    query="""
+    MATCH (t:Twin)
+    WHERE t.`$metadata`.`$model` = 'dtmi:agent:Memory;1'
+    RETURN t ORDER BY cosine_distance(t.contentEmbedding, [0.1, ...]) ASC
+    LIMIT 10
+    """
 )
 ```
+
+## Embedding Configuration
+
+The server supports embedding generation for semantic search:
+
+```env
+# Enable embeddings (default: true)
+EMBEDDING_ENABLED=true
+EMBEDDING_PROVIDER=openai  # or azure_openai, custom
+
+# OpenAI
+OPENAI_API_KEY=sk-your-key
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+
+# Or Azure OpenAI
+# AZURE_OPENAI_API_KEY=your-key
+# AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+# AZURE_OPENAI_DEPLOYMENT_NAME=text-embedding-3-small
+```
+
+See [docs/embeddings.md](docs/embeddings.md) for full configuration options.
 
 ## Project Structure
 

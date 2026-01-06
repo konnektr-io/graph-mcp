@@ -75,17 +75,24 @@ Link related twins to build a knowledge graph:
 }
 ```
 
-### 4. Semantic Search
+### 4. Semantic Search with Embeddings
 
-Find information by meaning, not just keywords:
+Find information by meaning using vector embeddings:
 
 ```
 Query: "user interface preferences"
 Matches:
-  - "User prefers dark mode" (high similarity)
-  - "UI should be minimalist" (medium similarity)
-  - "Color scheme is important" (lower similarity)
+  - "User prefers dark mode" (cosine distance: 0.15)
+  - "UI should be minimalist" (cosine distance: 0.23)
+  - "Color scheme is important" (cosine distance: 0.31)
 ```
+
+The system supports **hybrid search** combining:
+- **Vector similarity**: Semantic meaning using embeddings
+- **Keyword matching**: Direct text matches
+- **Graph traversal**: Related entities via relationships
+
+See [embeddings.md](embeddings.md) for detailed configuration.
 
 ## Typical Workflows
 
@@ -98,13 +105,17 @@ Matches:
 models = await list_models()
 # Returns: [{"id": "dtmi:example:Memory;1", "displayName": "Agent Memory"}, ...]
 
-# 2. Search for relevant models
+# 2. Search for relevant models (uses vector similarity if configured)
 results = await search_models(search_text="conversation")
-# Finds models related to conversations
+# Finds models semantically related to conversations
 
 # 3. Get full model details
 model = await get_model(model_id="dtmi:example:Memory;1")
 # Returns complete schema with all properties and relationships
+
+# 4. Check embedding configuration
+info = await get_embedding_info()
+# Returns: {"enabled": true, "provider": "openai", "dimensions": 1536}
 ```
 
 **When to use:**
@@ -112,61 +123,79 @@ model = await get_model(model_id="dtmi:example:Memory;1")
 - Exploring unfamiliar knowledge domains
 - Before storing new types of data
 
-### Workflow 2: Storing New Information (Create Memory)
+### Workflow 2: Storing New Information with Embeddings
 
 ```python
-# Agent learns something new and wants to store it
+# Agent learns something new and wants to store it with semantic searchability
 
 # 1. Identify the appropriate model
 models = await search_models(search_text="user preference")
 model_id = models[0]["id"]
 
-# 2. Create a digital twin
-twin = {
-    "$metadata": {"$model": model_id},
-    "content": "User prefers concise responses without extra explanations",
-    "timestamp": "2024-01-15T10:30:00Z",
-    "importance": 9,
-    "category": "communication_style"
-}
-
+# 2. Create a digital twin WITH embeddings
 result = await create_or_replace_digital_twin(
     twin_id="pref-communication-001",
-    twin=twin
+    model_id=model_id,
+    properties={
+        "content": "User prefers concise responses without extra explanations",
+        "timestamp": "2024-01-15T10:30:00Z",
+        "importance": 9,
+        "category": "communication_style"
+    },
+    # Generate embeddings from this text (stored as vectors)
+    embeddings={
+        "contentEmbedding": "User prefers concise, brief responses without lengthy explanations or unnecessary details"
+    }
 )
 ```
 
-**Validation happens automatically:**
-- ✅ All required properties present → Success
-- ❌ Missing required property → Error with details
-- ❌ Wrong property type → Error with details
-- ❌ Extra properties not in schema → Error
+The server automatically:
+1. Generates vector embeddings from the provided text
+2. Stores the vectors in the specified properties
+3. Validates the twin against the DTDL model
 
 ### Workflow 3: Finding Relevant Information (Memory Retrieval)
 
 ```python
 # Agent needs to recall information
 
-# Option A: Semantic search (best for concepts)
+# Option A: Hybrid search (vector + keyword)
 results = await search_digital_twins(
     search_text="how does the user like to communicate",
+    embedding_property="contentEmbedding",  # Which embedding to search
     limit=5
 )
 # Returns twins semantically similar to query
 
-# Option B: Model-filtered search
+# Option B: Model-filtered vector search
 results = await search_digital_twins(
     search_text="preferences",
     model_id="dtmi:example:UserPreference;1",
+    embedding_property="contentEmbedding",
     limit=10
 )
-# Returns only twins of specific type
 
-# Option C: Structured query (best for precise filtering)
-results = await query_digital_twins(
-    query="SELECT * FROM digitaltwins WHERE importance > 7"
+# Option C: Advanced vector search with graph context
+results = await vector_search_with_graph(
+    search_text="communication style",
+    embedding_property="contentEmbedding",
+    model_id="dtmi:example:UserPreference;1",
+    distance_metric="cosine",
+    include_graph_context=True,  # Also return related twins
+    limit=10
 )
-# SQL-like queries for complex conditions
+# Returns matches with similarity scores + related entities
+
+# Option D: Structured Cypher query with vector ordering
+results = await query_digital_twins(
+    query="""
+    MATCH (t:Twin)
+    WHERE t.`$metadata`.`$model` = 'dtmi:example:UserPreference;1'
+    RETURN t, cosine_distance(t.contentEmbedding, [0.1, 0.2, ...]) as score
+    ORDER BY score ASC
+    LIMIT 10
+    """
+)
 ```
 
 ### Workflow 4: Updating Existing Information

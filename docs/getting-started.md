@@ -82,6 +82,11 @@ AUTH_ENABLED=false
 API_BASE_URL_TEMPLATE=http://localhost:5000
 # or
 API_BASE_URL_TEMPLATE=https://{resource_id}.staging.api.graph.konnektr.io
+
+# Enable embeddings (optional but recommended)
+EMBEDDING_ENABLED=true
+EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=sk-your-api-key
 ```
 
 **For production with Auth0:**
@@ -90,7 +95,22 @@ AUTH_ENABLED=true
 AUTH0_DOMAIN=your-tenant.auth0.com
 AUTH0_AUDIENCE=https://graph.konnektr.io
 API_BASE_URL_TEMPLATE=https://{resource_id}.api.graph.konnektr.io
+
+# Embeddings (choose one provider)
+EMBEDDING_ENABLED=true
+EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=sk-your-api-key
+# Or use Azure OpenAI:
+# EMBEDDING_PROVIDER=azure_openai
+# AZURE_OPENAI_API_KEY=your-key
+# AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+# AZURE_OPENAI_DEPLOYMENT_NAME=text-embedding-3-small
+# Or use Google Gemini:
+# EMBEDDING_PROVIDER=gemini
+# GOOGLE_API_KEY=your-google-api-key
 ```
+
+See [embeddings.md](embeddings.md) for detailed embedding configuration.
 
 ### 5. Run the Server
 

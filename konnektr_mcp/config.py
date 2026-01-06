@@ -1,6 +1,7 @@
 # konnektr_mcp/config.py
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -17,6 +18,29 @@ class Settings(BaseSettings):
 
     # MCP Server
     mcp_resource_url: str = "https://mcp.graph.konnektr.io"
+
+    # Embedding Configuration
+    # Provider: "openai", "azure_openai", or "gemini"
+    embedding_provider: str = "openai"
+    embedding_enabled: bool = True
+
+    # OpenAI settings
+    openai_api_key: Optional[str] = None
+    openai_embedding_model: str = "text-embedding-3-small"
+    openai_base_url: Optional[str] = None  # For OpenAI-compatible endpoints
+
+    # Azure OpenAI settings
+    azure_openai_api_key: Optional[str] = None
+    azure_openai_endpoint: Optional[str] = None
+    azure_openai_deployment_name: Optional[str] = None
+    azure_openai_api_version: str = "2024-02-01"
+
+    # Google Gemini settings
+    google_api_key: Optional[str] = None
+    google_embedding_model: str = "text-embedding-004"
+
+    # Fixed embedding dimension (used across all providers)
+    embedding_dimensions: int = 1024
 
     class Config:
         env_file = ".env"
