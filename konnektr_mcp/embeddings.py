@@ -246,8 +246,7 @@ class GeminiEmbeddingService(EmbeddingService):
         return embeddings
 
     async def close(self) -> None:
-        """No cleanup needed for Gemini SDK."""
-        pass
+        self._client.close()
 
 
 def create_embedding_service(

@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # Google Gemini settings
     google_api_key: Optional[str] = None
-    google_embedding_model: str = "text-embedding-004"
+    google_embedding_model: str = "gemini-embedding-001"
 
     # Fixed embedding dimension (used across all providers)
     embedding_dimensions: int = 1024
