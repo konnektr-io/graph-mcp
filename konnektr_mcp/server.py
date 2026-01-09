@@ -869,70 +869,97 @@ async def vector_search_with_graph(
     # Format embedding as a string for the Cypher query
     embedding_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
 
-    # Base query for vector search
-    if model_id:
-        query = f"""
-        MATCH (t:Twin)
-        WHERE digitaltwins.is_of_model(t, '{model_id}')
-        RETURN t, {distance_func}(t.`{embedding_property}`, {embedding_str}) as distance
-        ORDER BY distance ASC
-        LIMIT {limit}
-        """
+    # Base query for vector search (optionally expanded with graph context)
+    if include_graph_context:
+        if model_id:
+            query = f"""
+            MATCH (t:Twin)
+            WHERE digitaltwins.is_of_model(t, '{model_id}') AND t.`{embedding_property}` IS NOT NULL
+            WITH t, {distance_func}(t.`{embedding_property}`, {embedding_str}) as distance
+            ORDER BY distance ASC
+            LIMIT {limit}
+            OPTIONAL MATCH (incomingTwin:Twin)-[incomingRel]->(t)
+            OPTIONAL MATCH (t)-[outgoingRel]->(outgoingTwin:Twin)
+            RETURN t,
+                   distance,
+                   collect(DISTINCT {{type: 'incoming', relationship: incomingRel, twin: incomingTwin}}) as incoming,
+                   collect(DISTINCT {{type: 'outgoing', relationship: outgoingRel, twin: outgoingTwin}}) as outgoing
+            """
+        else:
+            query = f"""
+            MATCH (t:Twin)
+            WHERE t.`{embedding_property}` IS NOT NULL
+            WITH t, {distance_func}(t.`{embedding_property}`, {embedding_str}) as distance
+            ORDER BY distance ASC
+            LIMIT {limit}
+            OPTIONAL MATCH (incomingTwin:Twin)-[incomingRel]->(t)
+            OPTIONAL MATCH (t)-[outgoingRel]->(outgoingTwin:Twin)
+            RETURN t,
+                   distance,
+                   collect(DISTINCT {{type: 'incoming', relationship: incomingRel, twin: incomingTwin}}) as incoming,
+                   collect(DISTINCT {{type: 'outgoing', relationship: outgoingRel, twin: outgoingTwin}}) as outgoing
+            """
     else:
-        query = f"""
-        MATCH (t:Twin)
-        WHERE t.`{embedding_property}` IS NOT NULL
-        RETURN t, {distance_func}(t.`{embedding_property}`, {embedding_str}) as distance
-        ORDER BY distance ASC
-        LIMIT {limit}
-        """
+        if model_id:
+            query = f"""
+            MATCH (t:Twin)
+            WHERE digitaltwins.is_of_model(t, '{model_id}') AND t.`{embedding_property}` IS NOT NULL
+            RETURN t, {distance_func}(t.`{embedding_property}`, {embedding_str}) as distance
+            ORDER BY distance ASC
+            LIMIT {limit}
+            """
+        else:
+            query = f"""
+            MATCH (t:Twin)
+            WHERE t.`{embedding_property}` IS NOT NULL
+            RETURN t, {distance_func}(t.`{embedding_property}`, {embedding_str}) as distance
+            ORDER BY distance ASC
+            LIMIT {limit}
+            """
 
     # Execute the query
     matches = []
+    related: list[dict] = []
     async for result in client.query_twins(query):
+        if include_graph_context and isinstance(result, dict):
+            incoming = result.get("incoming") or []
+            outgoing = result.get("outgoing") or []
+
+            for entry in incoming:
+                related.append(
+                    {
+                        "type": "incoming",
+                        "relationship": entry.get("relationship"),
+                        "twin": entry.get("twin"),
+                    }
+                )
+
+            for entry in outgoing:
+                related.append(
+                    {
+                        "type": "outgoing",
+                        "relationship": entry.get("relationship"),
+                        "twin": entry.get("twin"),
+                    }
+                )
+
+            # Remove the aggregated context from the base match to keep matches clean
+            result = {
+                k: v for k, v in result.items() if k not in {"incoming", "outgoing"}
+            }
+
         matches.append(result)
 
-    result = {
+    result_payload = {
         "matches": matches,
         "query_embedding_dims": len(query_embedding),
         "distance_metric": distance_metric,
     }
 
-    # If graph context requested, get related twins
-    if include_graph_context and matches:
-        # Get IDs of matched twins
-        twin_ids = []
-        for match in matches:
-            if isinstance(match, dict):
-                # Handle both dict and twin object formats
-                if "t" in match and isinstance(match["t"], dict):
-                    twin_ids.append(match["t"].get("$dtId"))
-                elif "$dtId" in match:
-                    twin_ids.append(match["$dtId"])
+    if include_graph_context:
+        result_payload["related"] = related
 
-        related = []
-        for twin_id in twin_ids[:5]:  # Limit graph expansion to top 5 matches
-            if twin_id:
-                # Get outgoing relationships
-                async for rel in client.list_relationships(twin_id):
-                    related.append(
-                        {
-                            "type": "outgoing",
-                            "relationship": rel.to_dict(),
-                        }
-                    )
-                # Get incoming relationships
-                async for rel in client.list_incoming_relationships(twin_id):
-                    related.append(
-                        {
-                            "type": "incoming",
-                            "relationship": rel.to_dict(),
-                        }
-                    )
-
-        result["related"] = related
-
-    return result
+    return result_payload
 
 
 # ========== Relationship Tools ==========
